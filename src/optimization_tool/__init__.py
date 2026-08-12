@@ -1,0 +1,52 @@
+"""optimization_tool package.
+
+Re-exports the main optimization harness from ``optimization_tool.optimization``.
+"""
+
+from optimization_tool.optimization import (
+    OptimizationLogger,
+    VariableBoundsError,
+    _extract_raw_value,
+    _get_virtuoso_client_class,
+    _parse_var_info,
+    download_and_parse_specs,
+    evaluate_candidate,
+    extract_objectives_from_output_csv,
+    fetch_variables,
+    fetch_variables_with_units,
+    get_current_test_name,
+    mae_set_var,
+    mae_set_var_str,
+    normalize_value,
+    parse_output_value,
+    plot_optimization_results,
+    read_simulation_output_csv,
+    read_specs_from_csv,
+    run_optimization_loop,
+    run_simulation_and_wait,
+    validate_variable_bounds,
+)
+
+__all__ = [
+    "run_optimization_loop",
+    "OptimizationLogger",
+    "plot_optimization_results",
+    "fetch_variables",
+    "fetch_variables_with_units",
+    "VariableBoundsError",
+    "validate_variable_bounds",
+    "evaluate_candidate",
+    "extract_objectives_from_output_csv",
+    "download_and_parse_specs",
+    "read_specs_from_csv",
+    "read_simulation_output_csv",
+    "run_simulation_and_wait",
+    "mae_set_var",
+    "mae_set_var_str",
+    "get_current_test_name",
+    "normalize_value",
+    "parse_output_value",
+    "_get_virtuoso_client_class",
+    "_parse_var_info",
+    "_extract_raw_value",
+]

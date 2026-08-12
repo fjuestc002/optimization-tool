@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "optimization-tool"
+version = "0.1.0"
+description = "Optimization tooling that depends on local virtuoso-bridge-lite-main."
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "pandas",
+    "numpy",
+    "pymoo",
+    "virtuoso-bridge @ file:///C:/Users/DELL/virtuoso-bridge-lite-main"
+]
+
+[project.scripts]
+optimization-tool = "optimization_tool.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-q"
