@@ -4,11 +4,16 @@ Re-exports the main optimization harness from ``optimization_tool.optimization``
 """
 
 from optimization_tool.optimization import (
+    ALGORITHM_REGISTRY,
     OptimizationLogger,
     VariableBoundsError,
+    _create_algorithm,
     _extract_raw_value,
+    _get_algorithm_category,
+    _get_algorithms_for_problem,
     _get_virtuoso_client_class,
     _parse_var_info,
+    _validate_algorithm,
     download_and_parse_specs,
     evaluate_candidate,
     extract_objectives_from_output_csv,
@@ -46,6 +51,11 @@ __all__ = [
     "get_current_test_name",
     "normalize_value",
     "parse_output_value",
+    "ALGORITHM_REGISTRY",
+    "_get_algorithm_category",
+    "_get_algorithms_for_problem",
+    "_validate_algorithm",
+    "_create_algorithm",
     "_get_virtuoso_client_class",
     "_parse_var_info",
     "_extract_raw_value",

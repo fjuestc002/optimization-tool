@@ -21,6 +21,116 @@ import pandas as pd
 VirtuosoClient = None
 
 
+# ── Algorithm registry ─────────────────────────────────────────────────────────
+
+ALGORITHM_REGISTRY: dict[str, dict] = {
+    # Single-objective
+    "ga":     {"module": "pymoo.algorithms.soo.nonconvex.ga",     "class": "GA",     "categories": ["single"]},
+    "de":     {"module": "pymoo.algorithms.soo.nonconvex.de",     "class": "DE",     "categories": ["single"]},
+    "pso":    {"module": "pymoo.algorithms.soo.nonconvex.pso",    "class": "PSO",    "categories": ["single"]},
+    "cmaes":  {"module": "pymoo.algorithms.soo.nonconvex.cmaes",  "class": "CMAES",  "categories": ["single"]},
+    # Multi-objective (2-3 objectives)
+    "nsga2":  {"module": "pymoo.algorithms.moo.nsga2",            "class": "NSGA2",  "categories": ["multi"]},
+    "spea2":  {"module": "pymoo.algorithms.moo.spea2",            "class": "SPEA2",  "categories": ["multi"]},
+    # Multi + Many-objective (2+ objectives)
+    "nsga3":  {"module": "pymoo.algorithms.moo.nsga3",            "class": "NSGA3",  "categories": ["multi", "many"]},
+    "moead":  {"module": "pymoo.algorithms.moo.moead",            "class": "MOEAD",  "categories": ["multi", "many"]},
+    "rnsga3": {"module": "pymoo.algorithms.moo.rnsga3",           "class": "RNSGA3", "categories": ["multi", "many"]},
+    # Many-objective (4+ objectives)
+    "ctaea":  {"module": "pymoo.algorithms.moo.ctaea",            "class": "CTAEA",  "categories": ["many"]},
+}
+
+
+def _get_algorithm_category(n_obj: int) -> str:
+    """Map number of objectives to algorithm category."""
+    if n_obj == 1:
+        return "single"
+    elif n_obj <= 3:
+        return "multi"
+    else:
+        return "many"
+
+
+def _get_algorithms_for_problem(n_obj: int) -> list[str]:
+    """List algorithm names suitable for a problem with n_obj objectives."""
+    category = _get_algorithm_category(n_obj)
+    return sorted(name for name, info in ALGORITHM_REGISTRY.items()
+                  if category in info["categories"])
+
+
+def _validate_algorithm(name: str, n_obj: int) -> None:
+    """Validate that an algorithm is suitable for the given number of objectives."""
+    name = name.lower()
+    if name not in ALGORITHM_REGISTRY:
+        raise ValueError(
+            f"Unknown algorithm '{name}'. Available: {sorted(ALGORITHM_REGISTRY)}"
+        )
+    category = _get_algorithm_category(n_obj)
+    info = ALGORITHM_REGISTRY[name]
+    if category not in info["categories"]:
+        suitable = _get_algorithms_for_problem(n_obj)
+        raise ValueError(
+            f"Algorithm '{name}' is not suitable for {n_obj}-objective problem "
+            f"(category: {category}). Choose from: {suitable}"
+        )
+
+
+def _create_algorithm(
+    name: str,
+    pop_size: int,
+    n_obj: int,
+    callback: Any,
+    xl: Optional[np.ndarray] = None,
+    xu: Optional[np.ndarray] = None,
+) -> Any:
+    """Create a pymoo algorithm instance by name.
+
+    Args:
+        name: Algorithm name (e.g. 'nsga2', 'ga', 'de').
+        pop_size: Population size.
+        n_obj: Number of objectives.
+        callback: Pymoo callback instance.
+        xl: Lower bounds (required for CMAES).
+        xu: Upper bounds (required for CMAES).
+
+    Returns:
+        A pymoo algorithm instance.
+    """
+    import importlib
+
+    name = name.lower()
+    info = ALGORITHM_REGISTRY[name]
+    module = importlib.import_module(info["module"])
+    cls = getattr(module, info["class"])
+
+    if name in ("nsga3", "moead", "ctaea"):
+        from pymoo.util.ref_dirs import get_reference_directions
+
+        ref_dirs = get_reference_directions("das-dennis", n_obj, n_partitions=12)
+        if name == "nsga3":
+            return cls(pop_size=pop_size, ref_dirs=ref_dirs, callback=callback)
+        elif name == "moead":
+            return cls(ref_dirs=ref_dirs, callback=callback)
+        else:  # ctaea
+            return cls(ref_dirs=ref_dirs, callback=callback)
+    elif name == "cmaes":
+        if xl is None or xu is None:
+            raise ValueError("CMAES requires xl and xu (variable bounds) to compute initial step size.")
+        x0 = (xl + xu) / 2.0
+        sigma = float((xu - xl).mean() * 0.1)
+        if sigma <= 0:
+            sigma = 0.1
+        return cls(x0=x0, sigma=sigma, pop_size=pop_size, callback=callback)
+    elif name == "rnsga3":
+        raise ValueError(
+            "RNSGA3 requires pre-defined reference points in objective space, "
+            "which are not available in the generic optimization loop."
+        )
+    else:
+        # GA, DE, PSO, NSGA2, SPEA2
+        return cls(pop_size=pop_size, callback=callback)
+
+
 def _get_virtuoso_client_class() -> Any:
     global VirtuosoClient
     if VirtuosoClient is None:
@@ -626,8 +736,8 @@ def run_optimization_loop(
     plot: bool = True,
     plot_dir: str = ".",
     show: bool = True,
+    algo: str = "nsga2",
 ) -> Any:
-    from pymoo.algorithms.moo.nsga2 import NSGA2
     from pymoo.core.problem import Problem
     from pymoo.optimize import minimize
     from pymoo.termination import get_termination
@@ -662,7 +772,8 @@ def run_optimization_loop(
 
     class VirtuosoProblem(Problem):
         def __init__(self) -> None:
-            super().__init__(n_var=len(var_names), n_obj=n_obj, n_constr=0, xl=xl, xu=xu)
+            # 2 inequality constraints per variable: x >= xl and x <= xu
+            super().__init__(n_var=len(var_names), n_obj=n_obj, n_constr=2 * len(var_names), xl=xl, xu=xu)
             self.client = client
             self.var_names = var_names
             self.run_directory = run_directory
@@ -673,7 +784,13 @@ def run_optimization_loop(
         def _evaluate(self, x, out, *args, **kwargs) -> None:
             n = x.shape[0]
             F = np.zeros((n, self.n_obj))
+            G = np.zeros((n, 2 * self.n_var))
             for i in range(n):
+                # Variable bounds constraints (G <= 0 means feasible)
+                for j in range(self.n_var):
+                    G[i, 2 * j] = self.xl[j] - x[i, j]       # violated if x[j] < xl[j]
+                    G[i, 2 * j + 1] = x[i, j] - self.xu[j]   # violated if x[j] > xu[j]
+                #
                 try:
                     vals = evaluate_candidate(
                         self.client,
@@ -703,13 +820,16 @@ def run_optimization_loop(
                 else:
                     F[i, :] = vals[: self.n_obj]
             out["F"] = F
+            out["G"] = G
 
     problem = VirtuosoProblem()
-    algorithm = NSGA2(pop_size=pop_size, callback=logger)
+    # Validate and create algorithm
+    _validate_algorithm(algo, n_obj)
+    algorithm = _create_algorithm(algo, pop_size, n_obj, logger, xl=xl, xu=xu)
     termination = get_termination("n_gen", generations)
 
     if verbose:
-        print("run_optimization_loop: n_obj=", n_obj, "pop_size=", pop_size, "generations=", generations, "dry_run=", dry_run)
+        print("run_optimization_loop: algo=", algo, "n_obj=", n_obj, "pop_size=", pop_size, "generations=", generations, "dry_run=", dry_run)
         print("variables=", var_names)
         print("lower bounds=", xl)
         print("upper bounds=", xu)
@@ -736,8 +856,14 @@ def main() -> int:
     parser.add_argument("--csv-filename", default=None, help="Local CSV file to use instead of downloading")
     parser.add_argument("--generations", type=int, default=10, help="Number of optimization generations")
     parser.add_argument("--population", type=int, default=20, help="Population size")
-    parser.add_argument("--dry-run", dest="dry_run", action="store_true", default=True, help="Run in dry-run mode (no real simulation)")
-    parser.add_argument("--real-run", dest="dry_run", action="store_false", help="Run actual Virtuoso simulation")
+    parser.add_argument("--algo", default="nsga2",
+                        help="Optimization algorithm. See --list-algos for available options. (default: nsga2)")
+    parser.add_argument("--list-algos", action="store_true",
+                        help="List available algorithms by category and exit")
+    parser.add_argument("--dry-run", dest="dry_run", action="store_true", default=True,
+                        help="Run in dry-run mode (no real simulation)")
+    parser.add_argument("--real-run", dest="dry_run", action="store_false",
+                        help="Run actual Virtuoso simulation")
     parser.add_argument("--download-dir", default=None, help="Local directory for downloaded CSV files")
     parser.add_argument("--seed", type=int, default=1, help="Random seed")
     parser.add_argument("--quiet", action="store_true", help="Suppress verbose output")
@@ -745,6 +871,19 @@ def main() -> int:
     parser.set_defaults(plot=True)
     parser.add_argument("--plot-dir", default=".", help="Directory to save plot images")
     args = parser.parse_args()
+
+    # Handle --list-algos (no connection needed)
+    if args.list_algos:
+        print("Available optimization algorithms in pymoo:\n")
+        for n_obj_desc, category in [("1 (single-objective)", "single"),
+                                      ("2-3 (multi-objective)", "multi"),
+                                      ("4+ (many-objective)", "many")]:
+            algos = sorted(name for name, info in ALGORITHM_REGISTRY.items()
+                           if category in info["categories"])
+            print(f"  n_obj={n_obj_desc}: {', '.join(algos)}")
+        print()
+        print("(Algorithm availability depends on the number of objectives in your CSV spec.)")
+        return 0
 
     download_dir = Path(args.download_dir).expanduser() if args.download_dir else None
     res = run_optimization_loop(
@@ -758,6 +897,7 @@ def main() -> int:
         verbose=not args.quiet,
         plot=args.plot,
         plot_dir=args.plot_dir,
+        algo=args.algo,
     )
 
     print("Optimization finished")
