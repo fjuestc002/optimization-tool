@@ -10,6 +10,7 @@ This module provides a consolidated workflow for:
 
 from __future__ import annotations
 
+import os
 import argparse
 import re
 from pathlib import Path
@@ -18,27 +19,24 @@ from typing import Any, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
+from optimization_tool.optimizers import (
+    list_optimizers,
+    optimize as unified_optimize,
+    validate_algorithm,
+)
+from optimization_tool.optimizers.registry import OPTIMIZER_REGISTRY
+from optimization_tool.optimizers.pymoo_adapter import _create_pymoo_algorithm
+from optimization_tool.optimizers.base import OptimizerResult
+from optimization_tool.project import ProjectRun
+
 VirtuosoClient = None
 
 
-# ── Algorithm registry ─────────────────────────────────────────────────────────
+# ── Algorithm registry (re-exported from optimizers package) ──────────────────
 
-ALGORITHM_REGISTRY: dict[str, dict] = {
-    # Single-objective
-    "ga":     {"module": "pymoo.algorithms.soo.nonconvex.ga",     "class": "GA",     "categories": ["single"]},
-    "de":     {"module": "pymoo.algorithms.soo.nonconvex.de",     "class": "DE",     "categories": ["single"]},
-    "pso":    {"module": "pymoo.algorithms.soo.nonconvex.pso",    "class": "PSO",    "categories": ["single"]},
-    "cmaes":  {"module": "pymoo.algorithms.soo.nonconvex.cmaes",  "class": "CMAES",  "categories": ["single"]},
-    # Multi-objective (2-3 objectives)
-    "nsga2":  {"module": "pymoo.algorithms.moo.nsga2",            "class": "NSGA2",  "categories": ["multi"]},
-    "spea2":  {"module": "pymoo.algorithms.moo.spea2",            "class": "SPEA2",  "categories": ["multi"]},
-    # Multi + Many-objective (2+ objectives)
-    "nsga3":  {"module": "pymoo.algorithms.moo.nsga3",            "class": "NSGA3",  "categories": ["multi", "many"]},
-    "moead":  {"module": "pymoo.algorithms.moo.moead",            "class": "MOEAD",  "categories": ["multi", "many"]},
-    "rnsga3": {"module": "pymoo.algorithms.moo.rnsga3",           "class": "RNSGA3", "categories": ["multi", "many"]},
-    # Many-objective (4+ objectives)
-    "ctaea":  {"module": "pymoo.algorithms.moo.ctaea",            "class": "CTAEA",  "categories": ["many"]},
-}
+# Kept as a reference for backward compatibility; the authoritative registry
+# is in optimization_tool.optimizers.registry.OPTIMIZER_REGISTRY.
+ALGORITHM_REGISTRY: dict[str, dict] = {k: v for k, v in OPTIMIZER_REGISTRY.items() if v["type"] == "pymoo"}
 
 
 def _get_algorithm_category(n_obj: int) -> str:
@@ -52,27 +50,18 @@ def _get_algorithm_category(n_obj: int) -> str:
 
 
 def _get_algorithms_for_problem(n_obj: int) -> list[str]:
-    """List algorithm names suitable for a problem with n_obj objectives."""
+    """List pymoo algorithm names suitable for a problem with n_obj objectives."""
     category = _get_algorithm_category(n_obj)
     return sorted(name for name, info in ALGORITHM_REGISTRY.items()
-                  if category in info["categories"])
+                  if category in info.get("categories", []))
 
 
 def _validate_algorithm(name: str, n_obj: int) -> None:
-    """Validate that an algorithm is suitable for the given number of objectives."""
-    name = name.lower()
-    if name not in ALGORITHM_REGISTRY:
-        raise ValueError(
-            f"Unknown algorithm '{name}'. Available: {sorted(ALGORITHM_REGISTRY)}"
-        )
-    category = _get_algorithm_category(n_obj)
-    info = ALGORITHM_REGISTRY[name]
-    if category not in info["categories"]:
-        suitable = _get_algorithms_for_problem(n_obj)
-        raise ValueError(
-            f"Algorithm '{name}' is not suitable for {n_obj}-objective problem "
-            f"(category: {category}). Choose from: {suitable}"
-        )
+    """Validate that an algorithm is suitable for the given number of objectives.
+
+    Delegates to the shared validator in the optimizers package.
+    """
+    validate_algorithm(name, n_obj)
 
 
 def _create_algorithm(
@@ -85,50 +74,9 @@ def _create_algorithm(
 ) -> Any:
     """Create a pymoo algorithm instance by name.
 
-    Args:
-        name: Algorithm name (e.g. 'nsga2', 'ga', 'de').
-        pop_size: Population size.
-        n_obj: Number of objectives.
-        callback: Pymoo callback instance.
-        xl: Lower bounds (required for CMAES).
-        xu: Upper bounds (required for CMAES).
-
-    Returns:
-        A pymoo algorithm instance.
+    Delegates to the shared factory in the optimizers package.
     """
-    import importlib
-
-    name = name.lower()
-    info = ALGORITHM_REGISTRY[name]
-    module = importlib.import_module(info["module"])
-    cls = getattr(module, info["class"])
-
-    if name in ("nsga3", "moead", "ctaea"):
-        from pymoo.util.ref_dirs import get_reference_directions
-
-        ref_dirs = get_reference_directions("das-dennis", n_obj, n_partitions=12)
-        if name == "nsga3":
-            return cls(pop_size=pop_size, ref_dirs=ref_dirs, callback=callback)
-        elif name == "moead":
-            return cls(ref_dirs=ref_dirs, callback=callback)
-        else:  # ctaea
-            return cls(ref_dirs=ref_dirs, callback=callback)
-    elif name == "cmaes":
-        if xl is None or xu is None:
-            raise ValueError("CMAES requires xl and xu (variable bounds) to compute initial step size.")
-        x0 = (xl + xu) / 2.0
-        sigma = float((xu - xl).mean() * 0.1)
-        if sigma <= 0:
-            sigma = 0.1
-        return cls(x0=x0, sigma=sigma, pop_size=pop_size, callback=callback)
-    elif name == "rnsga3":
-        raise ValueError(
-            "RNSGA3 requires pre-defined reference points in objective space, "
-            "which are not available in the generic optimization loop."
-        )
-    else:
-        # GA, DE, PSO, NSGA2, SPEA2
-        return cls(pop_size=pop_size, callback=callback)
+    return _create_pymoo_algorithm(name, pop_size, n_obj, callback, xl=xl, xu=xu)
 
 
 def _get_virtuoso_client_class() -> Any:
@@ -147,11 +95,34 @@ def _get_virtuoso_client_class() -> Any:
 
 
 def normalize_value(text: str) -> float:
+    """Convert a Virtuoso value string (with optional SI suffix) to a float.
+
+    Supports SPICE suffixes: f (1e-15), p (1e-12), n (1e-9), u (1e-6),
+    m (1e-3), k (1e3), meg (1e6), M (1e6), g (1e9).
+    """
     text = text.strip()
     if not text:
         return 0.0
-    text = text.replace("n", "e-9").replace("u", "e-6").replace("m", "e-3")
-    return float(text)
+
+    # Try direct float conversion first (handles "1e-9", "0.5", etc.)
+    try:
+        return float(text)
+    except ValueError:
+        pass
+
+    # Match number + optional alphabetic suffix
+    m = re.match(r'([-+]?[0-9]*\.?[0-9]+(?:[eE][-+]?[0-9]+)?)\s*([a-zA-Z]+)', text)
+    if m:
+        num = float(m.group(1))
+        suffix = m.group(2)  # case-sensitive: "M" != "m"
+        multiplier = {
+            'f': 1e-15, 'p': 1e-12, 'n': 1e-9, 'u': 1e-6,'G': 1e9,
+            'm': 1e-3, 'k': 1e3, 'meg': 1e6, 'M': 1e6, 'g': 1e9,
+        }.get(suffix)
+        if multiplier is not None:
+            return num * multiplier
+
+    raise ValueError(f"Cannot normalize value: {text}")
 
 
 def parse_output_value(value: Any) -> Optional[float]:
@@ -216,13 +187,17 @@ def _parse_var_info(info: str) -> Tuple[float, str, float, float]:
     except Exception:
         num_val = 0.0
 
-    # 2. From/To range — between {From/To} tags
-    #    Format: {From/To}Auto:from_value:steps:to_value{From/To}
-    m_range = re.search(r"\{From/To\}([^}]+)\{From/To\}", info)
+    # 2. Range — between {From/To} or {Center/Span} tags
+    #    From/To: {From/To}Auto:from_value:steps:to_value{From/To}
+    #    Center/Span: {Center/Span}Auto:center:steps:span{Center/Span}
+    m_from_to = re.search(r"\{From/To\}([^}]+)\{From/To\}", info)
+    m_center_span = re.search(r"\{Center/Span\}([^}]+)\{Center/Span\}", info)
+
     var_min = 0.0
     var_max = 0.0
-    if m_range:
-        parts = m_range.group(1).split(":")
+
+    if m_from_to:
+        parts = m_from_to.group(1).split(":")
         if len(parts) >= 4:
             # Auto:from:steps:to
             try:
@@ -237,9 +212,34 @@ def _parse_var_info(info: str) -> Tuple[float, str, float, float]:
                 var_max = normalize_value(parts[2])
             except Exception:
                 pass
-        # Safety: ensure min <= max even if Virtuoso returns them reversed
-        if var_min > var_max:
-            var_min, var_max = var_max, var_min
+
+    elif m_center_span:
+        # Center/Span mode: Auto:center:steps:span
+        parts = m_center_span.group(1).split(":")
+        if len(parts) >= 4:
+            try:
+                center = normalize_value(parts[1])
+                span = normalize_value(parts[3])
+                var_min = center - span / 2.0
+                var_max = center + span / 2.0
+            except Exception:
+                pass
+        elif len(parts) >= 3:
+            try:
+                center = normalize_value(parts[1])
+                span = normalize_value(parts[2])
+                var_min = center - span / 2.0
+                var_max = center + span / 2.0
+            except Exception:
+                pass
+
+    # Safety: ensure min <= max even if Virtuoso returns them reversed
+    if var_min > var_max:
+        var_min, var_max = var_max, var_min
+
+    # Clamp negative bounds to 0 (Center/Span may produce negative From)
+    if var_min < 0.0:
+        var_min = 0.0
 
     return num_val, raw_val, var_min, var_max
 
@@ -261,10 +261,10 @@ def validate_variable_bounds(
             "bounds (e.g. From/To with explicit values), or define the "
             "range in the variable settings."
         )
-    if var_min <= 0.0 or var_max <= 0.0:
+    if var_min < 0.0 or var_max <= 0.0:
         raise VariableBoundsError(
             f"Variable '{name}' has invalid range: min={var_min}, max={var_max}. "
-            "Both bounds must be positive."
+            "Both bounds must be non-negative (max > 0)."
         )
     if var_min > var_max:
         raise VariableBoundsError(
@@ -364,13 +364,27 @@ def download_and_parse_specs(
     parts = current_test_output.split(":")
     lib_name = parts[0][2:] if parts and len(parts) > 0 else "unknown"
     cell_name = parts[1] if len(parts) > 1 else "unknown"
-    filename = f"outputs_{lib_name}_{cell_name}_maestro.csv"
+    filename = f"outputs_{lib_name}_{cell_name}_maestro_setup.csv"
     local_path = local_dir / filename
-    remote_path = Path(run_directory) / filename
-    client.download_file(str(remote_path), str(local_path))
+#    remote_path = Path(run_directory) / filename
+    remote_path = f"/home/colon/Desktop/project1010drv/{filename}"
+    print(Path(run_directory))
 
+    if os.path.exists(local_path):
+        os.remove(local_path)
+        print("文件已成功删除")
+    client.download_file(str(remote_path), str(local_path))
+    print(str(remote_path), str(local_path))
     df = pd.read_csv(local_path)
-    expr_df = df[df["Type"] == "expr"]
+    print(df["Spec"])
+ #   expr_df = df[df["Type"] == "expr"]
+ #   expr_df = df[(df["Type"] == "expr") & (df["Spec"].notna()) & (df["Spec"] != " ")]
+    expr_df = df[
+        (df["Type"] == "expr") &
+        (df["Spec"].notna()) &
+        (df["Spec"].str.strip() != "")
+    ]
+    print(expr_df)
     names = expr_df["Name"].astype(str).tolist()
     weights = expr_df["Weight"].astype(float).to_numpy()
     specs = expr_df["Spec"].astype(str).tolist()
@@ -379,7 +393,11 @@ def download_and_parse_specs(
 
 def read_specs_from_csv(path: Path) -> tuple[List[str], np.ndarray, List[str]]:
     df = pd.read_csv(path)
-    expr_df = df[df["Type"] == "expr"]
+    expr_df = df[
+        (df["Type"] == "expr") &
+        (df["Spec"].notna()) &
+        (df["Spec"].str.strip() != "")
+        ]
     names = expr_df["Name"].astype(str).tolist()
     weights = expr_df["Weight"].astype(float).to_numpy()
     specs = expr_df["Spec"].astype(str).tolist()
@@ -412,20 +430,43 @@ def mae_set_var_str(client: Any, name: str, raw_value: str) -> Any:
 
 
 def run_simulation_and_wait(client: Any, timeout: int = 600) -> Any:
-    """Run simulation and wait for completion using callback-based approach.
+    """Run simulation and wait for completion using Maestro callback-based approach.
 
     Uses client.maestro.run_and_wait() which registers a SKILL callback
     that writes a marker file when done. Python polls the marker via SSH
     every 2 seconds, keeping the SKILL channel free during the wait.
+
+    Detects ADE Explorer and gives a clear error — this tool requires Maestro.
 
     Args:
         client: VirtuosoClient instance
         timeout: Max wait time in seconds (default 600s = 10 minutes)
 
     Returns:
-        VirtuosoResult or tuple (history, status)
+        tuple (history, status)
     """
+    _check_not_explorer(client)
     return client.maestro.run_and_wait(timeout=timeout)
+
+
+def _check_not_explorer(client: Any) -> None:
+    """Check the current window is ADE Maestro, not Explorer."""
+    try:
+        result = client.execute_skill(
+            'let((s) s = car(errset(sevSession(hiGetCurrentWindow()))) if(s then "t" else "nil"))'
+        )
+        if result.output.strip().strip('"') == "t":
+            raise RuntimeError(
+                "检测到 ADE Explorer 窗口。本工具需要 ADE Maestro。\n"
+                "请在 Maestro 中创建或打开 testbench，然后重试。\n"
+                "提示: 在 Library Manager 中可以用 File → New → Cell View →\n"
+                "Maestro 创建 Maestro view，或者用 ADE Explorer 的\n"
+                "Session → Migrate to Maestro 迁移现有测试。"
+            )
+    except RuntimeError:
+        raise
+    except Exception:
+        pass  # Best-effort check; proceed if detection fails
 
 
 def read_simulation_output_csv(
@@ -434,7 +475,6 @@ def read_simulation_output_csv(
     current_test_output: str,
     local_dir: Optional[Path] = None,
 ) -> Path:
-    client.execute_skill("maeExportOutputView()")
     if local_dir is None:
         local_dir = Path.cwd()
     parts = current_test_output.split(":")
@@ -443,30 +483,86 @@ def read_simulation_output_csv(
     filename = f"outputs_{lib_name}_{cell_name}_maestro.csv"
     local_path = local_dir / filename
     remote_path = Path(run_directory) / filename
+
+    # Use export_output_view with explicit filename to avoid default location
+    client.maestro.export_output_view(str(remote_path))
     client.download_file(str(remote_path), str(local_path))
     return local_path
 
 
-def extract_objectives_from_output_csv(df: pd.DataFrame, n_obj: int) -> np.ndarray:
-    if "Value" in df.columns:
-        values = [parse_output_value(v) for v in df["Value"].tolist()]
-        values = [v for v in values if v is not None]
-        if len(values) >= n_obj:
-            return np.array(values[:n_obj], dtype=float)
-
-    if "Result" in df.columns:
-        values = [parse_output_value(v) for v in df["Result"].tolist()]
-        values = [v for v in values if v is not None]
-        if len(values) >= n_obj:
-            return np.array(values[:n_obj], dtype=float)
-
-    if "Output" in df.columns and "Type" in df.columns:
-        expr_df = df[df["Type"] == "expr"]
-        values = [parse_output_value(v) for v in expr_df["Output"].tolist()]
-        values = [v for v in values if v is not None]
-        if len(values) >= n_obj:
-            return np.array(values[:n_obj], dtype=float)
-
+def extract_objectives_from_output_csv(df: pd.DataFrame, n_obj: int, specs: Optional[List[str]] = None) -> np.ndarray:
+    # 清理列名
+    df.columns = df.columns.str.strip()
+    
+    # 1. 先尝试用 Spec 非空的行，判断是否存在 Min/Max 列
+    if "Spec" in df.columns:
+        mask = df["Spec"].notna() & (df["Spec"].astype(str).str.strip() != "")
+        valid_rows = df[mask]
+        print(valid_rows)
+        # 只取前 n_obj 行（应与目标顺序一致）
+        if len(valid_rows) >= n_obj:
+            # 提取目标对应的 spec 字符串
+            spec_list = []
+            if specs is not None and len(specs) >= n_obj:
+                spec_list = specs[:n_obj]
+            else:
+                # 如果未传入 specs，则从 CSV 的 Spec 列读取
+                spec_list = valid_rows["Spec"].iloc[:n_obj].astype(str).tolist()
+            
+            # 判断方向：'>' 取 Min，'<' 取 Max
+            col_to_use = []
+            for s in spec_list:
+                s = s.strip()
+                if s.startswith('>') or s.startswith('≥'):
+                    col_to_use.append("Min")
+                elif s.startswith('<') or s.startswith('≤'):
+                    col_to_use.append("Max")
+                else:
+                    # 无法判断方向，默认取 Min（或 tt25）
+                    col_to_use.append("Min")
+            
+            # 尝试从 Min/Max 列取值
+            values = []
+            for i in range(n_obj):
+                col = col_to_use[i]
+                if col in df.columns:
+                    val = valid_rows[col].iloc[i]
+                    parsed = parse_output_value(val)
+                    values.append(parsed if parsed is not None else 1e9)
+                    print("aaaaa")
+                else:
+                    # 如果没有 Min/Max 列，尝试找所有 corner 列（如 tt25, tt125...）
+                    # 找出所有非固定列名（排除 Test, Output, Spec, Weight, Pass/Fail, Min, Max）
+                    fixed_cols = {"Test", "Output", "Spec", "Weight", "Pass/Fail", "Min", "Max"}
+                    corner_cols = [c for c in df.columns if c not in fixed_cols and c != ""]
+                    if corner_cols:
+                        # 取该行所有 corner 列的值
+                        corner_values = []
+                        for c in corner_cols:
+                            if c in valid_rows.columns:
+                                pv = parse_output_value(valid_rows[c].iloc[i])
+                                if pv is not None:
+                                    corner_values.append(pv)
+                        if corner_values:
+                            # 根据方向选择最差值：'>' 取最小值（最差），'<' 取最大值（最差）
+                            if col_to_use[i] == "Min":   # '>' 约束
+                                values.append(min(corner_values))
+                            else:                        # '<' 约束
+                                values.append(max(corner_values))
+                        else:
+                            values.append(1e9)
+                    else:
+                        # 只有一列数值？尝试读取该行第一个数值列（通常是 tt25 或唯一列）
+                        numeric_cols = [c for c in df.columns if c not in fixed_cols and c != ""]
+                        if numeric_cols:
+                            parsed = parse_output_value(valid_rows[numeric_cols[0]].iloc[i])
+                            values.append(parsed if parsed is not None else 1e9)
+                        else:
+                            values.append(1e9)
+                    print("bbbbb")
+            return np.array(values, dtype=float)
+    
+    # 如果以上方法失败，返回惩罚值
     return np.full(n_obj, 1e9, dtype=float)
 
 
@@ -479,6 +575,8 @@ def evaluate_candidate(
     csv_path: Optional[Path] = None,
     dry_run: bool = False,
     n_obj: int = 1,
+    specs: Optional[List[str]] = None,     # 新增
+
 ) -> np.ndarray:
     if dry_run:
         if csv_path is not None and csv_path.exists():
@@ -497,7 +595,9 @@ def evaluate_candidate(
 
     run_simulation_and_wait(client)
     out_csv = read_simulation_output_csv(client, run_directory, current_test_output)
+    print(f"out {out_csv}")
     df = pd.read_csv(out_csv)
+    print(f"df  {df}")
     return extract_objectives_from_output_csv(df, n_obj)
 
 
@@ -515,11 +615,25 @@ class OptimizationLogger:
 
     After optimization, ``logger.data`` contains per-generation history
     for plotting.
+
+    Parameters
+    ----------
+    var_names: Names of decision variables.
+    obj_names: Names of objective functions.
+    progress_callback: Optional callable invoked each generation with
+        ``(gen, n_eval, best_X, best_F, all_X, all_F)`` for real-time
+        progress reporting (e.g. GUI signal emission).
     """
 
-    def __init__(self, var_names: List[str], obj_names: List[str]):
+    def __init__(
+        self,
+        var_names: List[str],
+        obj_names: List[str],
+        progress_callback: Optional[callable] = None,
+    ):
         self.var_names = var_names
         self.obj_names = obj_names
+        self.progress_callback = progress_callback
         self.is_initialized = False
         self.data: dict = {
             "n_gen": [],
@@ -566,6 +680,18 @@ class OptimizationLogger:
             print(f"    {name}: {best_F[i]:.6e}")
         print(f"  Best sum: {best_F.sum():.6e}")
 
+        # Real-time progress callback (for GUI / worker)
+        if self.progress_callback is not None:
+            self.progress_callback(
+                gen=gen,
+                n_eval=algorithm.evaluator.n_eval,
+                best_X=best_X,
+                best_F=best_F,
+                all_X=X,
+                all_F=F,
+                obj_names=self.obj_names,
+            )
+
 
 # ── Visualization ────────────────────────────────────────────────────────────
 
@@ -591,6 +717,12 @@ def plot_optimization_results(
     import matplotlib
     matplotlib.use("TkAgg")  # interactive backend for Windows display
     import matplotlib.pyplot as plt
+
+    # CJK font support
+    plt.rcParams["font.sans-serif"] = [
+        "Microsoft YaHei", "SimHei", "DengXian", "DejaVu Sans",
+    ]
+    plt.rcParams["axes.unicode_minus"] = False
 
     data = logger.data
     save_path = Path(save_dir)
@@ -727,8 +859,8 @@ def _plot_pareto_2d_matrix(
 def run_optimization_loop(
     run_directory: str = ".",
     csv_filename: Optional[str] = None,
-    generations: int = 50,
-    pop_size: int = 50,
+    generations: int = 10,
+    pop_size: int = 5,
     dry_run: bool = True,
     seed: int = 1,
     local_download_dir: Optional[Path] = None,
@@ -737,10 +869,10 @@ def run_optimization_loop(
     plot_dir: str = ".",
     show: bool = True,
     algo: str = "nsga2",
+    project_dir: Optional[str] = None,
+    progress_callback: Optional[callable] = None,
 ) -> Any:
     from pymoo.core.problem import Problem
-    from pymoo.optimize import minimize
-    from pymoo.termination import get_termination
 
     VirtuosoClientClass = _get_virtuoso_client_class()
     client = VirtuosoClientClass.from_env()
@@ -754,38 +886,67 @@ def run_optimization_loop(
     xl = np.minimum(mins, maxs)
     xu = np.maximum(mins, maxs)
 
-    if csv_filename is None:
-        names, weights, specs, csv_path = download_and_parse_specs(
-            client, run_directory, current_test, local_dir=local_download_dir
+#    if csv_filename is None:
+    names, weights, specs, csv_path = download_and_parse_specs(
+        client, run_directory, current_test, local_dir=local_download_dir
         )
-    else:
-        csv_path = Path(csv_filename)
-        if not csv_path.exists():
-            raise FileNotFoundError(f"CSV file not found: {csv_path}")
-        names, weights, specs = read_specs_from_csv(csv_path)
+#    else:
+#        csv_path = Path(csv_filename)
+#        if not csv_path.exists():
+#            raise FileNotFoundError(f"CSV file not found: {csv_path}")
+    names, weights, specs = read_specs_from_csv(csv_path)
 
     n_obj = max(1, len(names))
 
     # Per-generation logging
     obj_names = names
-    logger = OptimizationLogger(var_names, obj_names)
+    logger = OptimizationLogger(var_names, obj_names, progress_callback=progress_callback)
+
+    # Initialize project run (if --project-dir specified)
+    project_run = None
+    if project_dir:
+        project_run = ProjectRun.create(project_dir)
+        project_run.save_config(
+            variables=var_names,
+            objectives=obj_names,
+            algo=algo,
+            generations=generations,
+            pop_size=pop_size,
+            dry_run=dry_run,
+            seed=seed,
+        )
+        project_run.save_variables_csv(var_names, vals.tolist(), mins.tolist(), maxs.tolist())
+        project_run.save_specs_csv(names, weights.tolist(), specs)
+        print(f"  [project] artifacts → {project_run.dir}")
 
     class VirtuosoProblem(Problem):
-        def __init__(self) -> None:
+        def __init__(self, stop_event=None, specs=None) -> None:   # 新增 specs 参数
+            
             # 2 inequality constraints per variable: x >= xl and x <= xu
-            super().__init__(n_var=len(var_names), n_obj=n_obj, n_constr=2 * len(var_names), xl=xl, xu=xu)
+            super().__init__(
+                n_var=len(var_names), 
+                n_obj=n_obj, 
+                n_constr=2 * len(var_names), 
+                xl=xl, 
+                xu=xu
+                )
             self.client = client
             self.var_names = var_names
             self.run_directory = run_directory
             self.current_test_output = current_test
             self.csv_path = csv_path
             self.dry_run = dry_run
+            self.stop_event = stop_event
+            self.specs = specs if specs is not None else []   # 保存 specs
 
         def _evaluate(self, x, out, *args, **kwargs) -> None:
             n = x.shape[0]
             F = np.zeros((n, self.n_obj))
             G = np.zeros((n, 2 * self.n_var))
             for i in range(n):
+                # Check abort signal between each evaluation (faster stop)
+                if self.stop_event and self.stop_event():
+                    raise KeyboardInterrupt("优化已中止")
                 # Variable bounds constraints (G <= 0 means feasible)
                 for j in range(self.n_var):
                     G[i, 2 * j] = self.xl[j] - x[i, j]       # violated if x[j] < xl[j]
@@ -801,6 +962,7 @@ def run_optimization_loop(
                         csv_path=self.csv_path,
                         dry_run=self.dry_run,
                         n_obj=self.n_obj,
+                         specs=self.specs,   # 新增这一行
                     )
                 except Exception:
                     print("Error evaluating candidate:", i)
@@ -822,23 +984,29 @@ def run_optimization_loop(
             out["F"] = F
             out["G"] = G
 
-    problem = VirtuosoProblem()
-    # Validate and create algorithm
-    _validate_algorithm(algo, n_obj)
-    algorithm = _create_algorithm(algo, pop_size, n_obj, logger, xl=xl, xu=xu)
-    termination = get_termination("n_gen", generations)
+    problem = VirtuosoProblem(specs=specs)
+    # Validate and run via unified optimizer (pymoo or Bayesian)
+    res = unified_optimize(
+        problem,
+        algo,
+        termination=("n_gen", generations),
+        pop_size=pop_size,
+        n_obj=n_obj,
+        seed=seed,
+        verbose=verbose,
+        callback=logger,
+        xl=xl,
+        xu=xu,
+    )
 
-    if verbose:
-        print("run_optimization_loop: algo=", algo, "n_obj=", n_obj, "pop_size=", pop_size, "generations=", generations, "dry_run=", dry_run)
-        print("variables=", var_names)
-        print("lower bounds=", xl)
-        print("upper bounds=", xu)
-        print("specs=", specs)
+    # Ensure callback_data is populated (for plotting / archiving)
+    if not hasattr(res, 'callback_data') or not res.callback_data:
+        res.callback_data = logger.data
 
-    res = minimize(problem, algorithm, termination, seed=seed, verbose=verbose,
-                   copy_algorithm=False)
-    logger.data["n_gen"] = logger.data["n_gen"]  # ensure latest
-    res.callback_data = logger.data
+    # Always include var_names / obj_names for the GUI results table
+    if res.callback_data:
+        res.callback_data["var_names"] = var_names
+        res.callback_data["obj_names"] = obj_names
 
     # Generate plots (default on)
     if plot:
@@ -846,6 +1014,16 @@ def run_optimization_loop(
             plot_optimization_results(logger, obj_names, save_dir=plot_dir, show=show)
         except Exception as exc:
             print(f"  [plot] warning: failed to generate plots — {exc}")
+
+    # Save project artifacts (if --project-dir specified)
+    if project_run is not None:
+        try:
+            project_run.save_all(res, logger, var_names, obj_names)
+            project_run.copy_plot(Path(plot_dir) / "convergence.png")
+            project_run.copy_plot(Path(plot_dir) / "pareto.png")
+            print(f"  [project] results saved → {project_run.dir}")
+        except Exception as exc:
+            print(f"  [project] warning: failed to save artifacts — {exc}")
 
     return res
 
@@ -870,22 +1048,35 @@ def main() -> int:
     parser.add_argument("--no-plot", dest="plot", action="store_false", help="Disable visualization plots (default: on)")
     parser.set_defaults(plot=True)
     parser.add_argument("--plot-dir", default=".", help="Directory to save plot images")
+    parser.add_argument("--project-dir", default=None, help="Project directory for archiving run artifacts (auto-created)")
     args = parser.parse_args()
 
     # Handle --list-algos (no connection needed)
     if args.list_algos:
-        print("Available optimization algorithms in pymoo:\n")
+        from optimization_tool.optimizers import list_optimizers as list_all
+
+        print("Available optimizers:\n")
         for n_obj_desc, category in [("1 (single-objective)", "single"),
                                       ("2-3 (multi-objective)", "multi"),
                                       ("4+ (many-objective)", "many")]:
-            algos = sorted(name for name, info in ALGORITHM_REGISTRY.items()
-                           if category in info["categories"])
-            print(f"  n_obj={n_obj_desc}: {', '.join(algos)}")
-        print()
+            algos = sorted(name for name, info in OPTIMIZER_REGISTRY.items()
+                           if category in info.get("categories", []))
+            # Show type tag
+            tagged = []
+            for a in algos:
+                info = OPTIMIZER_REGISTRY[a]
+                tag = "[pymoo]" if info["type"] == "pymoo" else "[bayes]"
+                desc = info.get("description", "")
+                tagged.append(f"{tag} {a}{' — ' + desc if desc else ''}")
+            print(f"  n_obj={n_obj_desc}:")
+            for t in tagged:
+                print(f"    {t}")
+            print()
         print("(Algorithm availability depends on the number of objectives in your CSV spec.)")
         return 0
 
     download_dir = Path(args.download_dir).expanduser() if args.download_dir else None
+    project_dir = args.project_dir
     res = run_optimization_loop(
         run_directory=args.run_directory,
         csv_filename=args.csv_filename,
@@ -898,6 +1089,7 @@ def main() -> int:
         plot=args.plot,
         plot_dir=args.plot_dir,
         algo=args.algo,
+        project_dir=project_dir,
     )
 
     print("Optimization finished")
