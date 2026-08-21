@@ -4,13 +4,13 @@ A Python optimization tool that connects pymoo evolutionary algorithms with
 Cadence Virtuoso Maestro for analog IC design optimization.
 
 ## Architecture
-![alt text](Readme.png)
+![alt text][def]
 ```
 ┌──────────────────────────────────────┐
 │  optimization_tool (Python)          │
 │  ┌────────────────────────────────┐  │
-│  │  pymoo 进化算法                 │  │
-│  │  (GA/NSGA2/DE/PSO/CMAES/…)    │  │
+│  │  pymoo Algorithm               │  │
+│  │  (GA/NSGA2/DE/PSO/CMAES/…)     │  │
 │  └────────────┬───────────────────┘  │
 │               │ SKILL commands       │
 │  ┌────────────▼───────────────────┐  │
@@ -123,3 +123,5 @@ my_project/
 
 - [pymoo documentation](https://pymoo.org/)
 - [virtuoso-bridge-lite](https://github.com/your-org/virtuoso-bridge-lite)
+
+[def]: image/Readme.png

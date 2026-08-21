@@ -95,10 +95,11 @@ def _get_virtuoso_client_class() -> Any:
 
 
 def normalize_value(text: str) -> float:
-    """Convert a Virtuoso value string (with optional SI suffix) to a float.
+    """Convert a Virtuoso value string (with optional SI suffix/unit) to a float.
 
     Supports SPICE suffixes: f (1e-15), p (1e-12), n (1e-9), u (1e-6),
-    m (1e-3), k (1e3), meg (1e6), M (1e6), g (1e9).
+    m (1e-3), k (1e3), meg (1e6), M (1e6), g (1e9), t (1e12),
+    as well as combined units (e.g., "100ns", "50mV", "100MHz", "1.8V", "60dB").
     """
     text = text.strip()
     if not text:
@@ -110,17 +111,43 @@ def normalize_value(text: str) -> float:
     except ValueError:
         pass
 
-    # Match number + optional alphabetic suffix
-    m = re.match(r'([-+]?[0-9]*\.?[0-9]+(?:[eE][-+]?[0-9]+)?)\s*([a-zA-Z]+)', text)
+    # Match number + optional alphabetic/unit suffix
+    m = re.match(r'([-+]?[0-9]*\.?[0-9]+(?:[eE][-+]?[0-9]+)?)\s*([a-zA-Z%µ_]+)', text)
     if m:
         num = float(m.group(1))
         suffix = m.group(2)  # case-sensitive: "M" != "m"
-        multiplier = {
-            'f': 1e-15, 'p': 1e-12, 'n': 1e-9, 'u': 1e-6,'G': 1e9,
-            'm': 1e-3, 'k': 1e3, 'meg': 1e6, 'M': 1e6, 'g': 1e9,
-        }.get(suffix)
-        if multiplier is not None:
-            return num * multiplier
+        multiplier_map = {
+            'f': 1e-15, 'p': 1e-12, 'n': 1e-9, 'u': 1e-6, 'µ': 1e-6,
+            'm': 1e-3, 'k': 1e3, 'K': 1e3, 'meg': 1e6, 'Meg': 1e6, 'MEG': 1e6,
+            'M': 1e6, 'g': 1e9, 'G': 1e9, 't': 1e12, 'T': 1e12,
+        }
+        if suffix in multiplier_map:
+            return num * multiplier_map[suffix]
+
+        # Suffix with physical unit (e.g. "ns", "ps", "mV", "uA", "MHz", "GHz", "kOhm", "V", "dB")
+        suffix_lower = suffix.lower()
+        if suffix_lower.startswith('meg'):
+            return num * 1e6
+        elif suffix.startswith(('u', 'µ')):
+            return num * 1e-6
+        elif suffix.startswith('n'):
+            return num * 1e-9
+        elif suffix.startswith('p'):
+            return num * 1e-12
+        elif suffix.startswith('f'):
+            return num * 1e-15
+        elif suffix.startswith('m'):  # lowercase 'm' followed by unit -> milli
+            return num * 1e-3
+        elif suffix.startswith(('k', 'K')):
+            return num * 1e3
+        elif suffix.startswith('M'):  # uppercase 'M' followed by unit -> Mega
+            return num * 1e6
+        elif suffix.startswith(('g', 'G')):
+            return num * 1e9
+        elif suffix.startswith(('t', 'T')):
+            return num * 1e12
+        elif suffix_lower in ('v', 'a', 's', 'hz', 'f', 'h', 'ohm', 'deg', 'db', 'w', 'rad', '%'):
+            return num * 1.0
 
     raise ValueError(f"Cannot normalize value: {text}")
 
@@ -835,7 +862,12 @@ def _plot_pareto(
         return
 
     fig = plt.figure(figsize=(9, 7))
-    F_all = np.concatenate(data["all_F"], axis=0)
+    if isinstance(data["all_F"][0], np.ndarray) and data["all_F"][0].ndim == 2:
+        F_all = np.concatenate(data["all_F"], axis=0)
+    else:
+        F_all = np.asarray(data["all_F"], dtype=float)
+        if F_all.ndim == 1:
+            F_all = F_all.reshape(1, -1)
     n_obj = len(obj_names)
 
     if n_obj == 2:
@@ -882,7 +914,12 @@ def _plot_pareto_2d_matrix(
     import matplotlib.pyplot as plt
 
     n = len(obj_names)
-    F_all = np.concatenate(data["all_F"], axis=0)
+    if isinstance(data["all_F"][0], np.ndarray) and data["all_F"][0].ndim == 2:
+        F_all = np.concatenate(data["all_F"], axis=0)
+    else:
+        F_all = np.asarray(data["all_F"], dtype=float)
+        if F_all.ndim == 1:
+            F_all = F_all.reshape(1, -1)
 
     fig, axes = plt.subplots(n, n, figsize=(4 * n, 4 * n))
     for i in range(n):
@@ -980,13 +1017,13 @@ def run_optimization_loop(
 
     class VirtuosoProblem(Problem):
         def __init__(self, stop_event=None, specs=None) -> None:   # 新增 specs 参数
-            
+
             # 2 inequality constraints per variable: x >= xl and x <= xu
             super().__init__(
-                n_var=len(var_names), 
-                n_obj=n_obj, 
-                n_constr=2 * len(var_names), 
-                xl=xl, 
+                n_var=len(var_names),
+                n_obj=n_obj,
+                n_constr=2 * len(var_names),
+                xl=xl,
                 xu=xu
                 )
             self.client = client
