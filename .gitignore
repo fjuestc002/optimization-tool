@@ -25,6 +25,10 @@ Thumbs.db
 *.csv
 *.png
 
+# But allow tracking source images in image/
+!image/
+!image/Readme.png
+
 # Backup
 *.bak
 
