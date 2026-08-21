@@ -7,6 +7,8 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt
 
+from ..lang import tr
+
 
 class ParamsPanel(QWidget):
     """Left-side parameter panel for optimization configuration."""
@@ -22,11 +24,13 @@ class ParamsPanel(QWidget):
         layout.setSpacing(8)
 
         # ── Algorithm group ──
-        grp_algo = QGroupBox("算法设置")
-        algol = QVBoxLayout(grp_algo)
+        self.grp_algo = QGroupBox()
+        algol = QVBoxLayout(self.grp_algo)
         algol.setSpacing(6)
 
-        algol.addWidget(QLabel("优化算法:"))
+        self.lbl_algo = QLabel()
+        algol.addWidget(self.lbl_algo)
+
         self.cb_algo = QComboBox()
         self.cb_algo.addItems([
             "nsga2", "nsga3", "spea2", "moead", "ctaea",
@@ -37,14 +41,11 @@ class ParamsPanel(QWidget):
             "bayes_gp", "bayes_rf", "bayes_gbrt",
             "bayes_mo", "bayes_turbo",
         ])
-        self.cb_algo.setToolTip(
-            "pymoo 进化算法 — NSGA2/3/SPEA2/MOEAD 适合多目标, GA/DE/PSO 适合单目标\n"
-            "贝叶斯优化 — bayes_gp 样本效率高, bayes_rf 鲁棒, bayes_mo 多目标"
-        )
         algol.addWidget(self.cb_algo)
 
         row_gen = QHBoxLayout()
-        row_gen.addWidget(QLabel("代数:"))
+        self.lbl_gen = QLabel()
+        row_gen.addWidget(self.lbl_gen)
         self.spin_generations = QSpinBox()
         self.spin_generations.setRange(1, 9999)
         self.spin_generations.setValue(50)
@@ -52,7 +53,8 @@ class ParamsPanel(QWidget):
         algol.addLayout(row_gen)
 
         row_pop = QHBoxLayout()
-        row_pop.addWidget(QLabel("种群:"))
+        self.lbl_pop = QLabel()
+        row_pop.addWidget(self.lbl_pop)
         self.spin_population = QSpinBox()
         self.spin_population.setRange(2, 9999)
         self.spin_population.setValue(50)
@@ -60,67 +62,71 @@ class ParamsPanel(QWidget):
         algol.addLayout(row_pop)
 
         row_seed = QHBoxLayout()
-        row_seed.addWidget(QLabel("随机种子:"))
+        self.lbl_seed = QLabel()
+        row_seed.addWidget(self.lbl_seed)
         self.spin_seed = QSpinBox()
         self.spin_seed.setRange(0, 999999)
         self.spin_seed.setValue(1)
         row_seed.addWidget(self.spin_seed)
         algol.addLayout(row_seed)
 
-        layout.addWidget(grp_algo)
+        layout.addWidget(self.grp_algo)
 
         # ── Run mode group ──
-        grp_mode = QGroupBox("运行模式")
-        model = QVBoxLayout(grp_mode)
+        self.grp_mode = QGroupBox()
+        model = QVBoxLayout(self.grp_mode)
         model.setSpacing(6)
 
-        self.chk_dry_run = QCheckBox("Dry-Run 模式（无真实仿真）")
+        self.chk_dry_run = QCheckBox()
         self.chk_dry_run.setChecked(True)
         self.chk_dry_run.toggled.connect(self._on_dry_run_toggled)
         model.addWidget(self.chk_dry_run)
 
-        self.chk_plot = QCheckBox("生成实时图表")
+        self.chk_plot = QCheckBox()
         self.chk_plot.setChecked(True)
         model.addWidget(self.chk_plot)
 
-        self.chk_project = QCheckBox("启用项目存档")
+        self.chk_project = QCheckBox()
         model.addWidget(self.chk_project)
 
-        self.chk_verbose = QCheckBox("详细日志输出")
+        self.chk_verbose = QCheckBox()
         model.addWidget(self.chk_verbose)
 
-        layout.addWidget(grp_mode)
+        layout.addWidget(self.grp_mode)
 
         # ── Project directory ──
-        grp_proj = QGroupBox("项目目录")
-        projl = QVBoxLayout(grp_proj)
+        self.grp_proj = QGroupBox()
+        projl = QVBoxLayout(self.grp_proj)
         projl.setSpacing(4)
 
         self.edit_project_dir = QLineEdit()
-        self.edit_project_dir.setPlaceholderText("留空 = 不存档")
+        self.edit_project_dir.setPlaceholderText(tr("proj_placeholder"))
         projl.addWidget(self.edit_project_dir)
 
-        layout.addWidget(grp_proj)
+        layout.addWidget(self.grp_proj)
 
         # ── Simulation settings (real-run mode) ──
-        self.grp_sim = QGroupBox("仿真设置（非 Dry-Run）")
+        self.grp_sim = QGroupBox()
         siml = QVBoxLayout(self.grp_sim)
         siml.setSpacing(4)
 
-        siml.addWidget(QLabel("CSV 文件路径:"))
+        self.lbl_csv = QLabel()
+        siml.addWidget(self.lbl_csv)
+
         csv_row = QHBoxLayout()
         self.edit_csv = QLineEdit()
-        self.edit_csv.setPlaceholderText("outputs_xxx_maestro.csv")
         csv_row.addWidget(self.edit_csv)
-        self.btn_browse_csv = QPushButton("浏览...")
+        self.btn_browse_csv = QPushButton()
         self.btn_browse_csv.setFixedWidth(60)
         self.btn_browse_csv.clicked.connect(self._browse_csv)
         csv_row.addWidget(self.btn_browse_csv)
         siml.addLayout(csv_row)
 
-        siml.addWidget(QLabel("运行目录:"))
+        self.lbl_run_dir = QLabel()
+        siml.addWidget(self.lbl_run_dir)
+
         self.edit_run_dir = QLineEdit()
-        self.edit_run_dir.setPlaceholderText(".")
+        self.edit_run_dir.setPlaceholderText(tr("run_dir_placeholder"))
         siml.addWidget(self.edit_run_dir)
 
         layout.addWidget(self.grp_sim)
@@ -128,12 +134,12 @@ class ParamsPanel(QWidget):
         # ── Action buttons ──
         layout.addSpacing(8)
 
-        self.btn_start = QPushButton("▶ 开始优化")
+        self.btn_start = QPushButton()
         self.btn_start.setObjectName("btnStart")
         self.btn_start.setMinimumHeight(36)
         layout.addWidget(self.btn_start)
 
-        self.btn_stop = QPushButton("■ 停止")
+        self.btn_stop = QPushButton()
         self.btn_stop.setObjectName("btnStop")
         self.btn_stop.setMinimumHeight(36)
         self.btn_stop.setEnabled(False)
@@ -142,10 +148,42 @@ class ParamsPanel(QWidget):
         layout.addStretch()
 
         # ── Version info ──
-        lbl_ver = QLabel("Prof. Fang Jian 优化工具 v0.1")
-        lbl_ver.setAlignment(Qt.AlignCenter)
-        lbl_ver.setStyleSheet("color: #808080; font-size: 11px;")
-        layout.addWidget(lbl_ver)
+        self.lbl_ver = QLabel()
+        self.lbl_ver.setAlignment(Qt.AlignCenter)
+        self.lbl_ver.setStyleSheet("color: #808080; font-size: 11px;")
+        layout.addWidget(self.lbl_ver)
+
+        # Apply initial translations
+        self.retranslate_ui()
+
+    def retranslate_ui(self):
+        """Update all UI strings to the current language."""
+        self.grp_algo.setTitle(tr("grp_algo"))
+        self.lbl_algo.setText(tr("lbl_algo"))
+        self.lbl_gen.setText(tr("lbl_generations"))
+        self.lbl_pop.setText(tr("lbl_population"))
+        self.lbl_seed.setText(tr("lbl_seed"))
+        self.cb_algo.setToolTip(tr("algo_tooltip"))
+
+        self.grp_mode.setTitle(tr("grp_mode"))
+        self.chk_dry_run.setText(tr("chk_dry_run"))
+        self.chk_plot.setText(tr("chk_plot"))
+        self.chk_project.setText(tr("chk_project"))
+        self.chk_verbose.setText(tr("chk_verbose"))
+
+        self.grp_proj.setTitle(tr("grp_proj"))
+        self.edit_project_dir.setPlaceholderText(tr("proj_placeholder"))
+
+        self.grp_sim.setTitle(tr("grp_sim"))
+        self.lbl_csv.setText(tr("lbl_csv"))
+        self.edit_csv.setPlaceholderText(tr("csv_placeholder"))
+        self.btn_browse_csv.setText(tr("btn_browse"))
+        self.lbl_run_dir.setText(tr("lbl_run_dir"))
+        self.edit_run_dir.setPlaceholderText(tr("run_dir_placeholder"))
+
+        self.btn_start.setText(tr("btn_start"))
+        self.btn_stop.setText(tr("btn_stop"))
+        self.lbl_ver.setText(tr("version"))
 
     # ── Getters for parameter values ──
 
@@ -195,12 +233,11 @@ class ParamsPanel(QWidget):
 
     def _browse_csv(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, "选择 CSV 文件", "",
+            self, tr("btn_browse"), "",
             "CSV 文件 (*.csv);;所有文件 (*.*)",
         )
         if path:
             self.edit_csv.setText(path)
 
     def _on_dry_run_toggled(self, checked: bool):
-        """Enable/disable simulation settings based on dry-run mode."""
         self.grp_sim.setEnabled(not checked)

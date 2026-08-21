@@ -1,0 +1,23 @@
+{
+  "timestamp": "2026-08-20T14:27:22.959928",
+  "algorithm": "nsga2",
+  "generations": 50,
+  "population": 50,
+  "dry_run": false,
+  "seed": 1,
+  "variables": [
+    "nm3",
+    "nm10",
+    "nm4",
+    "wnm2",
+    "wpm5",
+    "lpm5",
+    "wnm0",
+    "lpm0",
+    "capv"
+  ],
+  "objectives": [
+    "PM",
+    "Gain"
+  ]
+}

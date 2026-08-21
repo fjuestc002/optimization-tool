@@ -8,10 +8,11 @@ from PySide6.QtWidgets import (
     QLineEdit,
 )
 from PySide6.QtCore import Qt, QSize
-from PySide6.QtGui import QAction, QFont
+from PySide6.QtGui import QAction, QFont, QActionGroup
 
 from .widgets import ParamsPanel, PlotPanel, ResultsTable, LogPanel, VncWidget
 from .workers import OptimizationWorker, OptimizationWorkerSignals
+from .lang import tr, set_lang, get_lang, get_available_langs
 
 
 class MainWindow(QMainWindow):
@@ -19,12 +20,11 @@ class MainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Prof. Fang Jian 优化工具 — Virtuoso + pymoo")
+        self.setWindowTitle(tr("window_title"))
         self.resize(1400, 900)
 
         self._worker = None
         self._is_connected = False
-        self._vnc_connected = False
         self._plot_history = {"n_gen": [], "best_F": [], "all_F": [], "obj_names": None}
 
         self._build_menubar()
@@ -36,51 +36,67 @@ class MainWindow(QMainWindow):
 
     def _build_menubar(self):
         mb = self.menuBar()
+        self._menu_actions = {}
 
         # 文件
-        menu_file = mb.addMenu("文件(&F)")
-        act_new = QAction("新建优化", self)
-        act_new.triggered.connect(self._on_new_optimization)
-        menu_file.addAction(act_new)
-        menu_file.addSeparator()
-        act_exit = QAction("退出(&X)", self)
-        act_exit.triggered.connect(self.close)
-        menu_file.addAction(act_exit)
+        self._menu_file = mb.addMenu(tr("menu_file"))
+        self._act_new = QAction(tr("act_new"), self)
+        self._act_new.triggered.connect(self._on_new_optimization)
+        self._menu_file.addAction(self._act_new)
+        self._menu_file.addSeparator()
+        self._act_exit = QAction(tr("act_exit"), self)
+        self._act_exit.triggered.connect(self.close)
+        self._menu_file.addAction(self._act_exit)
 
         # 优化
-        menu_opt = mb.addMenu("优化(&O)")
-        act_start = QAction("开始优化", self)
-        act_start.triggered.connect(self._on_start)
-        menu_opt.addAction(act_start)
-        act_stop = QAction("停止", self)
-        act_stop.triggered.connect(self._on_stop)
-        menu_opt.addAction(act_stop)
+        self._menu_opt = mb.addMenu(tr("menu_opt"))
+        self._act_start = QAction(tr("act_start"), self)
+        self._act_start.triggered.connect(self._on_start)
+        self._menu_opt.addAction(self._act_start)
+        self._act_stop_act = QAction(tr("act_stop"), self)
+        self._act_stop_act.triggered.connect(self._on_stop)
+        self._menu_opt.addAction(self._act_stop_act)
 
         # 视图
-        menu_view = mb.addMenu("视图(&V)")
-        act_clear = QAction("清除日志", self)
-        act_clear.triggered.connect(self._on_clear_log)
-        menu_view.addAction(act_clear)
-        act_reset = QAction("重置图表", self)
-        act_reset.triggered.connect(self._on_reset_plots)
-        menu_view.addAction(act_reset)
+        self._menu_view = mb.addMenu(tr("menu_view"))
+        self._act_clear = QAction(tr("act_clear_log"), self)
+        self._act_clear.triggered.connect(self._on_clear_log)
+        self._menu_view.addAction(self._act_clear)
+        self._act_reset = QAction(tr("act_reset_plots"), self)
+        self._act_reset.triggered.connect(self._on_reset_plots)
+        self._menu_view.addAction(self._act_reset)
+
+        # 语言
+        self._menu_lang = mb.addMenu(tr("menu_lang"))
+        self._lang_group = QActionGroup(self)
+        self._lang_group.setExclusive(True)
+        self._lang_actions = {}
+        for code in get_available_langs():
+            label = tr(f"lang_{code}")
+            act = QAction(label, self, checkable=True)
+            act.setData(code)
+            act.setChecked(code == get_lang())
+            self._lang_group.addAction(act)
+            self._menu_lang.addAction(act)
+            self._lang_actions[code] = act
+        self._lang_group.triggered.connect(self._on_language_changed)
 
         # 帮助
-        menu_help = mb.addMenu("帮助(&H)")
-        act_about = QAction("关于", self)
-        act_about.triggered.connect(self._on_about)
-        menu_help.addAction(act_about)
+        self._menu_help = mb.addMenu(tr("menu_help"))
+        self._act_about = QAction(tr("act_about"), self)
+        self._act_about.triggered.connect(self._on_about)
+        self._menu_help.addAction(self._act_about)
 
     # ── Connection toolbar ──
 
     def _build_connection_bar(self):
-        bar = QToolBar("连接", self)
+        bar = QToolBar(tr("menu_view"), self)
         bar.setMovable(False)
         bar.setIconSize(QSize(16, 16))
         self.addToolBar(Qt.TopToolBarArea, bar)
 
         # Status indicator
-        self.lbl_conn_status = QLabel("● Virtuoso: 未连接")
+        self.lbl_conn_status = QLabel(tr("conn_status_disconnected"))
         self.lbl_conn_status.setObjectName("statusDisconnected")
         self.lbl_conn_status.setStyleSheet("font-weight: bold; font-size: 12px; padding: 2px 8px;")
         bar.addWidget(self.lbl_conn_status)
@@ -88,18 +104,19 @@ class MainWindow(QMainWindow):
         bar.addSeparator()
 
         # Connection button (SSH + VNC combined)
-        self.btn_connect = QPushButton("🔌 连接")
+        self.btn_connect = QPushButton(tr("conn_btn_connect"))
         self.btn_connect.setObjectName("btnConnect")
-        self.btn_connect.setToolTip("点击连接 Virtuoso (SSH) + VNC")
+        self.btn_connect.setToolTip(tr("conn_btn_connect"))
         self.btn_connect.clicked.connect(self._on_toggle_connection)
         bar.addWidget(self.btn_connect)
 
         bar.addSeparator()
 
-        # VNC status label
-        self.lbl_vnc_status = QLabel("VNC: 未连接")
-        self.lbl_vnc_status.setStyleSheet("color: #808080; font-size: 12px; padding: 2px 8px;")
-        bar.addWidget(self.lbl_vnc_status)
+        # VNC launch button
+        self.vnc = VncWidget()
+        bar.addWidget(self.vnc)
+
+        bar.addSeparator()
 
         # Spacer to push connection info to the right
         spacer = QWidget()
@@ -123,7 +140,7 @@ class MainWindow(QMainWindow):
         self.params = ParamsPanel()
         hsplit.addWidget(self.params)
 
-        # ── Right: Vertical splitter with plots, table, VNC, log ──
+        # ── Right: Vertical splitter with plots, table, log ──
         right_split = QSplitter(Qt.Vertical)
 
         # Plot area (convergence + pareto)
@@ -134,16 +151,12 @@ class MainWindow(QMainWindow):
         self.results = ResultsTable()
         right_split.addWidget(self.results)
 
-        # VNC area (collapsible)
-        self.vnc = VncWidget()
-        right_split.addWidget(self.vnc)
-
         # Log panel (CIW style)
         self.log = LogPanel()
         right_split.addWidget(self.log)
 
-        # Set initial proportions: plot 35%, table 20%, VNC 15%, log 30%
-        right_split.setSizes([350, 200, 150, 300])
+        # Set initial proportions: plot 40%, table 25%, log 35%
+        right_split.setSizes([400, 250, 350])
 
         hsplit.addWidget(right_split)
         hsplit.setSizes([300, 1100])
@@ -156,6 +169,8 @@ class MainWindow(QMainWindow):
         # Connect signals
         self.params.btn_start.clicked.connect(self._on_start)
         self.params.btn_stop.clicked.connect(self._on_stop)
+        self.results.solution_selected.connect(self._on_solution_selected)
+        self.plot.pareto_point_selected.connect(self._on_solution_selected)
 
     # ─ Status bar ──
 
@@ -183,7 +198,7 @@ class MainWindow(QMainWindow):
         )
         status_frame.addWidget(self.lbl_status_indicator)
 
-        self.lbl_status_text = QLabel("就绪")
+        self.lbl_status_text = QLabel(tr("status_ready"))
         self.lbl_status_text.setStyleSheet("font-size: 11px; padding: 1px 4px;")
         status_frame.addWidget(self.lbl_status_text)
 
@@ -197,15 +212,67 @@ class MainWindow(QMainWindow):
         sep.setStyleSheet("color: #aaaaaa;")
         sb.addWidget(sep)
 
-        self.lbl_status_gen = QLabel("代数: —")
-        self.lbl_status_eval = QLabel("评估: —")
-        self.lbl_status_best = QLabel("最佳: —")
-        self.lbl_status_time = QLabel("耗时: —")
+        self.lbl_status_gen = QLabel(tr("status_gen", n="—"))
+        self.lbl_status_eval = QLabel(tr("status_eval", n="—"))
+        self.lbl_status_best = QLabel(tr("status_best", vals="—"))
+        self.lbl_status_time = QLabel(tr("status_time", n="—"))
 
         for lbl in [self.lbl_status_gen, self.lbl_status_eval,
                      self.lbl_status_best, self.lbl_status_time]:
             lbl.setStyleSheet("padding: 1px 12px; font-size: 12px;")
             sb.addPermanentWidget(lbl)
+
+    # ── Language switching ──
+
+    def _on_language_changed(self, act: QAction):
+        """Switch UI language."""
+        code = act.data()
+        if code == get_lang():
+            return
+        set_lang(code)
+        self.retranslate_ui()
+
+    def retranslate_ui(self):
+        """Update all UI strings to current language."""
+        # Window title
+        self.setWindowTitle(tr("window_title"))
+
+        # Menu bar
+        self._menu_file.setTitle(tr("menu_file"))
+        self._menu_opt.setTitle(tr("menu_opt"))
+        self._menu_view.setTitle(tr("menu_view"))
+        self._menu_help.setTitle(tr("menu_help"))
+        self._menu_lang.setTitle(tr("menu_lang"))
+        self._act_new.setText(tr("act_new"))
+        self._act_exit.setText(tr("act_exit"))
+        self._act_start.setText(tr("act_start"))
+        self._act_stop_act.setText(tr("act_stop"))
+        self._act_clear.setText(tr("act_clear_log"))
+        self._act_reset.setText(tr("act_reset_plots"))
+        self._act_about.setText(tr("act_about"))
+        for code, act in self._lang_actions.items():
+            act.setText(tr(f"lang_{code}"))
+
+        # Connection bar
+        if self._is_connected:
+            self.lbl_conn_status.setText(tr("conn_status_connected"))
+        else:
+            self.lbl_conn_status.setText(tr("conn_status_disconnected"))
+        if hasattr(self, 'btn_connect'):
+            if self._is_connected:
+                self.btn_connect.setText(tr("conn_btn_disconnect"))
+            else:
+                self.btn_connect.setText(tr("conn_btn_connect"))
+
+        # Status bar
+        self.lbl_status_text.setText(tr("status_ready"))
+
+        # Child widgets
+        self.params.retranslate_ui()
+        self.plot.retranslate_ui()
+        self.results.retranslate_ui()
+        self.log.retranslate_ui()
+        self.vnc.retranslate_ui()
 
     def set_status(self, state: str, text: str = ""):
         """Update the status indicator color and text.
@@ -221,7 +288,8 @@ class MainWindow(QMainWindow):
         if text:
             self.lbl_status_text.setText(text)
         else:
-            self.lbl_status_text.setText(state.capitalize())
+            key = f"status_{state}"
+            self.lbl_status_text.setText(tr(key, state.capitalize()))
 
     # ── Connection logic ──
 
@@ -234,7 +302,7 @@ class MainWindow(QMainWindow):
     def _connect(self):
         self.log.info("正在连接 Virtuoso (SSH)...")
         self.btn_connect.setEnabled(False)
-        self.btn_connect.setText("连接中...")
+        self.btn_connect.setText(tr("conn_connecting"))
 
         try:
             from virtuoso_bridge import VirtuosoClient
@@ -245,11 +313,11 @@ class MainWindow(QMainWindow):
             self.log.ok(f"Virtuoso 已连接 — 当前测试: {test_name[:60]}")
 
             self._is_connected = True
-            self.lbl_conn_status.setText("● Virtuoso: 已连接")
+            self.lbl_conn_status.setText(tr("conn_status_connected"))
             self.lbl_conn_status.setObjectName("statusConnected")
             self.lbl_conn_status.style().unpolish(self.lbl_conn_status)
             self.lbl_conn_status.style().polish(self.lbl_conn_status)
-            self.btn_connect.setText("🔌 断开")
+            self.btn_connect.setText(tr("conn_btn_disconnect"))
 
             # Store client for later use
             self._virtuoso_client = client
@@ -270,11 +338,11 @@ class MainWindow(QMainWindow):
     def _disconnect(self):
         self._is_connected = False
         self._virtuoso_client = None
-        self.lbl_conn_status.setText("● Virtuoso: 未连接")
+        self.lbl_conn_status.setText(tr("conn_status_disconnected"))
         self.lbl_conn_status.setObjectName("statusDisconnected")
         self.lbl_conn_status.style().unpolish(self.lbl_conn_status)
         self.lbl_conn_status.style().polish(self.lbl_conn_status)
-        self.btn_connect.setText("🔌 连接")
+        self.btn_connect.setText(tr("conn_btn_connect"))
         self.params.btn_start.setEnabled(False)
         self.log.info("已断开 Virtuoso 连接")
 
@@ -283,9 +351,8 @@ class MainWindow(QMainWindow):
     def _on_start(self):
         if not self._is_connected and not self.params.dry_run:
             ret = QMessageBox.question(
-                self, "未连接 Virtuoso",
-                "Virtuoso 未连接，非 Dry-Run 模式需要连接才能运行。\n"
-                "是否继续？（仅限 Dry-Run 模式）",
+                self, tr("msg_no_virtuoso"),
+                tr("msg_confirm_dry"),
                 QMessageBox.Yes | QMessageBox.No,
             )
             if ret != QMessageBox.Yes:
@@ -293,21 +360,10 @@ class MainWindow(QMainWindow):
 
         if not self.params.dry_run and not self.params.csv_filename:
             QMessageBox.warning(
-                self, "缺少 CSV 文件",
-                "非 Dry-Run 模式需要指定 CSV 文件路径（仿真规格定义）。\n"
-                "请在「仿真设置」中填写 CSV 文件路径。",
+                self, tr("msg_missing_csv"),
+                tr("msg_specify_csv"),
             )
             return
-
- #       if not self.params.dry_run and self.params.csv_filename:
- #           from pathlib import Path
- #           if not Path(self.params.csv_filename).exists():
- #               QMessageBox.warning(
- #                   self, "CSV 文件不存在",
- #                   f"指定的 CSV 文件不存在:\n{self.params.csv_filename}\n\n"
- #                   "请检查路径是否正确，或先通过 Maestro 导出 CSV 文件。",
- #               )
- #               return
 
         self.params.btn_start.setEnabled(False)
         self.params.btn_stop.setEnabled(True)
@@ -316,10 +372,10 @@ class MainWindow(QMainWindow):
         self.params.spin_population.setEnabled(False)
         self.params.spin_seed.setEnabled(False)
 
-        self.set_status("running", "优化运行中")
+        self.set_status("running", tr("status_running"))
 
         self.log.info("=" * 50)
-        self.log.info("初始化优化...")
+        self.log.info(tr("msg_opt_start"))
 
         # Clear previous results
         self.results.clear_data()
@@ -356,25 +412,24 @@ class MainWindow(QMainWindow):
         self._worker.signals.error.connect(self._on_worker_error)
         self._worker.start()
 
-        self.log.info("优化正在后台运行...")
+        self.log.info(tr("msg_opt_running"))
 
     def _on_stop(self):
         if self._worker and self._worker.isRunning():
             self._worker.abort()
-            self.set_status("pause", "正在停止")
-            self.log.warn("正在停止优化...")
-            # Don't disable stop button yet — wait for actual finish
+            self.set_status("pause", tr("status_pause"))
+            self.log.warn(tr("msg_opt_stopped"))
 
     def _on_worker_log(self, message: str, level: str):
         getattr(self.log, level, self.log.info)(message)
 
     def _on_worker_progress(self, gen: int, n_eval: int, best_F: list, best_X: list):
         # Update status bar
-        self.lbl_status_gen.setText(f"代数: {gen}")
-        self.lbl_status_eval.setText(f"评估: {n_eval}")
+        self.lbl_status_gen.setText(tr("status_gen", n=str(gen)))
+        self.lbl_status_eval.setText(tr("status_eval", n=str(n_eval)))
         if best_F:
             best_str = ", ".join(f"{v:.4g}" for v in best_F)
-            self.lbl_status_best.setText(f"最佳: [{best_str}]")
+            self.lbl_status_best.setText(tr("status_best", vals=best_str))
 
     def _on_worker_plot_update(self, data: dict):
         """Update convergence + Pareto plots from worker callback data.
@@ -417,10 +472,11 @@ class MainWindow(QMainWindow):
             if obj_names is None:
                 obj_names = ["Obj1", "Obj2"]
             self.plot.update_pareto(F_all, obj_names[:2])
+            self.plot.update_history(F_all, obj_names[:2])
 
     def _on_worker_finished(self, result):
         self._finish_optimization()
-        self.set_status("done", "优化完成")
+        self.set_status("done", tr("msg_opt_done"))
         if result is not None:
             try:
                 # Extract Pareto results
@@ -430,26 +486,39 @@ class MainWindow(QMainWindow):
 
                 var_names = cb.get("var_names", [])
                 obj_names = cb.get("obj_names", [])
+                specs = cb.get("specs", [])
 
-                # Update results table
-                self.results.set_data(var_names, obj_names, X, F)
+                # Update results table (with spec-aware de-normalization)
+                self.results.set_data(var_names, obj_names, X, F, specs=specs)
 
                 # Update Pareto plot (skip if single-objective)
                 if len(F) > 0 and len(F[0]) >= 2:
                     p_names = obj_names if len(obj_names) >= 2 else ["Obj1", "Obj2"]
                     self.plot.update_pareto(F, p_names)
+                    # 存储 Pareto 变量数据以支持点击选取
+                    if X and var_names:
+                        self.plot.set_pareto_data(X, F, var_names, p_names)
                 else:
                     self.plot.update_pareto(F, ["Obj1", "Obj2"])
 
-                self.log.ok(f"优化完成 — 解数: {len(F)}, 目标: {len(F[0]) if F else 0}")
+                # Update all-history scatter
+                acc_all_F = self._plot_history.get("all_F", [])
+                if acc_all_F:
+                    flat = []
+                    for gen_f in acc_all_F:
+                        flat.extend(gen_f)
+                    h_names = obj_names if len(obj_names) >= 2 else ["Obj1", "Obj2"]
+                    self.plot.update_history(flat, h_names)
+
+                self.log.ok(tr("msg_opt_ok", n=str(len(F) if F else 0)))
 
             except Exception as exc:
-                self.log.warn(f"结果解析: {exc}")
+                self.log.warn(tr("msg_results_parse", exc=str(exc)))
 
     def _on_worker_error(self, message: str):
         self._finish_optimization()
-        self.set_status("error", "错误")
-        QMessageBox.critical(self, "优化错误", message)
+        self.set_status("error", tr("status_error"))
+        QMessageBox.critical(self, tr("msg_opt_error"), message)
 
     def _finish_optimization(self):
         self.params.btn_start.setEnabled(True)
@@ -459,6 +528,28 @@ class MainWindow(QMainWindow):
         self.params.spin_population.setEnabled(True)
         self.params.spin_seed.setEnabled(True)
 
+    # ── Selection → circuit ──
+
+    def _on_solution_selected(self, var_names: list, x_vals: list):
+        """将用户选中的 Pareto 解写回 Virtuoso 电路。"""
+        if not self._is_connected or not hasattr(self, '_virtuoso_client'):
+            QMessageBox.warning(self, tr("msg_not_connected"),
+                                tr("msg_connect_first"))
+            return
+
+        client = self._virtuoso_client
+        try:
+            for name, val in zip(var_names, x_vals):
+                client.execute_skill(f'maeSetVar("{name}" {val})')
+            self.log.ok(tr("msg_upload_ok", n=str(len(var_names))))
+            for n, v in zip(var_names, x_vals):
+                self.log.info(f"  {n} = {v:.6e}")
+            # 刷新仿真视图
+            client.execute_skill("maeUpdateOutputView()")
+            self.log.info(tr("msg_circuit_updated"))
+        except Exception as exc:
+            self.log.error(tr("msg_upload_fail", exc=str(exc)))
+
     # ── Menu actions ──
 
     def _on_new_optimization(self):
@@ -466,12 +557,12 @@ class MainWindow(QMainWindow):
         self.plot.clear_plots()
         self.log.clear()
         self._plot_history = {"n_gen": [], "best_F": [], "all_F": [], "obj_names": None}
-        self.lbl_status_gen.setText("代数: —")
-        self.lbl_status_eval.setText("评估: —")
-        self.lbl_status_best.setText("最佳: —")
-        self.lbl_status_time.setText("耗时: —")
-        self.set_status("ready", "就绪")
-        self.log.info("已重置 — 准备新优化")
+        self.lbl_status_gen.setText(tr("status_gen", n="—"))
+        self.lbl_status_eval.setText(tr("status_eval", n="—"))
+        self.lbl_status_best.setText(tr("status_best", vals="—"))
+        self.lbl_status_time.setText(tr("status_time", n="—"))
+        self.set_status("ready", tr("status_ready"))
+        self.log.info(tr("msg_reset"))
 
     def _on_clear_log(self):
         self.log.clear()
@@ -481,12 +572,10 @@ class MainWindow(QMainWindow):
 
     def _on_about(self):
         QMessageBox.about(
-#            self, "关于 DClaw 优化工具",
-#            "<b>DClaw 优化工具</b> v0.1<br><br>"
+            self, tr("act_about"),
             "基于 pymoo 进化算法 + Virtuoso Maestro<br>"
-#            "用于模拟 IC 电路设计的多目标优化。<br><br>"
-#            "引擎: pymoo (GA/NSGA2/DE/PSO/CMAES/...)<br>"
-#            "后端: Cadence Virtuoso / Spectre<br>"
-#            "连接: virtuoso-bridge (SSH)<br><br>"
-#            "杭州点壹下通讯科技有限公司"
+            "用于模拟 IC 电路设计的多目标优化。<br><br>"
+            "引擎: pymoo (GA/NSGA2/DE/PSO/CMAES/...)<br>"
+            "后端: Cadence Virtuoso / Spectre<br>"
+            "连接: virtuoso-bridge (SSH)",
         )

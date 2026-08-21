@@ -4,7 +4,7 @@ A Python optimization tool that connects pymoo evolutionary algorithms with
 Cadence Virtuoso Maestro for analog IC design optimization.
 
 ## Architecture
-
+![alt text](Readme.png)
 ```
 ┌──────────────────────────────────────┐
 │  optimization_tool (Python)          │

@@ -350,7 +350,7 @@ def fetch_variables_with_units(
 
 def get_current_test_name(client: Any) -> str:
     result = client.execute_skill("maeGetSetup()")
-    return result.output
+    return result.output.strip()
 
 
 def download_and_parse_specs(
@@ -366,14 +366,16 @@ def download_and_parse_specs(
     cell_name = parts[1] if len(parts) > 1 else "unknown"
     filename = f"outputs_{lib_name}_{cell_name}_maestro_setup.csv"
     local_path = local_dir / filename
-#    remote_path = Path(run_directory) / filename
-    remote_path = f"/home/colon/Desktop/project1010drv/{filename}"
-    print(Path(run_directory))
+    remote_path = Path(run_directory) / filename
+#    remote_path = run_directory / filename
+#    remote_path = f"/home/colon/Desktop/project1010drv/{filename}"
+    print(f"[DEBUG_path_1.1] remote_path = {Path(run_directory)}")
+    print(f"[DEBUG_path_1.2] remote_path = {remote_path}")
 
     if os.path.exists(local_path):
         os.remove(local_path)
-        print("文件已成功删除")
-    client.download_file(str(remote_path), str(local_path))
+        print("[DEBUG]文件已成功删除, for read new spec")
+    client.download_file(remote_path.as_posix(), str(local_path))
     print(str(remote_path), str(local_path))
     df = pd.read_csv(local_path)
     print(df["Spec"])
@@ -474,7 +476,7 @@ def read_simulation_output_csv(
     run_directory: str,
     current_test_output: str,
     local_dir: Optional[Path] = None,
-) -> Path:
+) -> pd.DataFrame:   # 返回 DataFrame，而不是 Path
     if local_dir is None:
         local_dir = Path.cwd()
     parts = current_test_output.split(":")
@@ -483,87 +485,118 @@ def read_simulation_output_csv(
     filename = f"outputs_{lib_name}_{cell_name}_maestro.csv"
     local_path = local_dir / filename
     remote_path = Path(run_directory) / filename
+#    remote_path = f"/home/colon/Desktop/project1010drv/{filename}"
+    print(f"[DEBUG_path_2.1] remote_path = {Path(run_directory)}")
+    print(f"[DEBUG_path_2.2] remote_path = {remote_path}")
+    # 使用 as_posix() 确保 SKILL 命令中的路径使用正斜杠，避免反斜杠被 SKILL 转义
+    client.maestro.export_output_view(remote_path.as_posix())
+    client.download_file(remote_path.as_posix(), str(local_path))
 
-    # Use export_output_view with explicit filename to avoid default location
-    client.maestro.export_output_view(str(remote_path))
-    client.download_file(str(remote_path), str(local_path))
-    return local_path
+    # 自动检测表头行
+    header_row = find_header_row(local_path)
+    print(f"[INFO] 检测到结果CSV表头在第 {header_row} 行")
+
+    # 读取 CSV，跳过元数据行
+    df = pd.read_csv(local_path, skiprows=header_row)
+    # 统一列名为小写，去除首尾空格
+    df.columns = df.columns.str.strip().str.lower()
+    print(f"[INFO] 列名（小写）: {df.columns.tolist()}")
+
+    return df   # 返回 DataFrame
 
 
 def extract_objectives_from_output_csv(df: pd.DataFrame, n_obj: int, specs: Optional[List[str]] = None) -> np.ndarray:
-    # 清理列名
-    df.columns = df.columns.str.strip()
-    
-    # 1. 先尝试用 Spec 非空的行，判断是否存在 Min/Max 列
-    if "Spec" in df.columns:
-        mask = df["Spec"].notna() & (df["Spec"].astype(str).str.strip() != "")
+    df.columns = df.columns.str.strip().str.lower()
+    print(f"[DEBUG] n_obj={n_obj}, specs={specs}")
+    print(f"[DEBUG] columns: {df.columns.tolist()}")
+    if "spec" in df.columns:
+        mask = df["spec"].notna() & (df["spec"].astype(str).str.strip() != "")
         valid_rows = df[mask]
-        print(valid_rows)
-        # 只取前 n_obj 行（应与目标顺序一致）
+        print(f"[DEBUG] valid_rows length={len(valid_rows)}")
+        print(f"[DEBUG] valid_rows head:\n{valid_rows[['test','spec','min','max']].head()}")
         if len(valid_rows) >= n_obj:
-            # 提取目标对应的 spec 字符串
-            spec_list = []
-            if specs is not None and len(specs) >= n_obj:
-                spec_list = specs[:n_obj]
-            else:
-                # 如果未传入 specs，则从 CSV 的 Spec 列读取
-                spec_list = valid_rows["Spec"].iloc[:n_obj].astype(str).tolist()
-            
-            # 判断方向：'>' 取 Min，'<' 取 Max
+            spec_list = specs if (specs is not None and len(specs)>=n_obj) else valid_rows["spec"].iloc[:n_obj].astype(str).tolist()
+            print(f"[DEBUG] spec_list={spec_list}")
             col_to_use = []
+            directions = []  # -1 = 要最大化(>类spec, 需取反), +1 = 要最小化(<类spec)
             for s in spec_list:
                 s = s.strip()
                 if s.startswith('>') or s.startswith('≥'):
-                    col_to_use.append("Min")
+                    col_to_use.append("min")
+                    directions.append(-1)
                 elif s.startswith('<') or s.startswith('≤'):
-                    col_to_use.append("Max")
+                    col_to_use.append("max")
+                    directions.append(+1)
                 else:
-                    # 无法判断方向，默认取 Min（或 tt25）
-                    col_to_use.append("Min")
-            
-            # 尝试从 Min/Max 列取值
-            values = []
+                    col_to_use.append("min")
+                    directions.append(+1)
+            print(f"[DEBUG] col_to_use={col_to_use}")
+            print(f"[DEBUG] directions={directions}  # -1=最大化(取反后pymoo最小化), +1=最小化(原值)")
+            corrected_vals = []
             for i in range(n_obj):
                 col = col_to_use[i]
                 if col in df.columns:
                     val = valid_rows[col].iloc[i]
                     parsed = parse_output_value(val)
-                    values.append(parsed if parsed is not None else 1e9)
-                    print("aaaaa")
-                else:
-                    # 如果没有 Min/Max 列，尝试找所有 corner 列（如 tt25, tt125...）
-                    # 找出所有非固定列名（排除 Test, Output, Spec, Weight, Pass/Fail, Min, Max）
-                    fixed_cols = {"Test", "Output", "Spec", "Weight", "Pass/Fail", "Min", "Max"}
-                    corner_cols = [c for c in df.columns if c not in fixed_cols and c != ""]
-                    if corner_cols:
-                        # 取该行所有 corner 列的值
-                        corner_values = []
-                        for c in corner_cols:
-                            if c in valid_rows.columns:
-                                pv = parse_output_value(valid_rows[c].iloc[i])
-                                if pv is not None:
-                                    corner_values.append(pv)
-                        if corner_values:
-                            # 根据方向选择最差值：'>' 取最小值（最差），'<' 取最大值（最差）
-                            if col_to_use[i] == "Min":   # '>' 约束
-                                values.append(min(corner_values))
-                            else:                        # '<' 约束
-                                values.append(max(corner_values))
-                        else:
-                            values.append(1e9)
+                    print(f"[DEBUG] i={i}, col={col}, raw='{val}', parsed={parsed}")
+                    if parsed is not None:
+                        # 方向修正：pymoo 默认最小化，对 > 类 spec 取反以实现最大化
+                        corrected = parsed * directions[i]
+                        print(f"[DEBUG]   → direction={directions[i]}, corrected={corrected}")
+                        corrected_vals.append(corrected)
                     else:
-                        # 只有一列数值？尝试读取该行第一个数值列（通常是 tt25 或唯一列）
-                        numeric_cols = [c for c in df.columns if c not in fixed_cols and c != ""]
-                        if numeric_cols:
-                            parsed = parse_output_value(valid_rows[numeric_cols[0]].iloc[i])
-                            values.append(parsed if parsed is not None else 1e9)
-                        else:
-                            values.append(1e9)
-                    print("bbbbb")
-            return np.array(values, dtype=float)
-    
-    # 如果以上方法失败，返回惩罚值
+                        corrected_vals.append(1e9)
+                else:
+                    print(f"[DEBUG] col {col} not in columns!")
+                    corrected_vals.append(1e9)
+            print(f"[DEBUG] corrected_vals={corrected_vals}")
+            if not any(v >= 1e9 for v in corrected_vals):
+                # 归一化：按 spec 阈值做参考，使各目标量级一致
+                normalized = _normalize_objectives(corrected_vals, spec_list, directions)
+                print(f"[DEBUG] normalized={normalized}")
+                return np.array(normalized, dtype=float)
+            else:
+                print("[DEBUG] some values are 1e9, will fallback to penalty")
+        else:
+            print("[DEBUG] valid_rows count < n_obj")
+    else:
+        print("[DEBUG] 'spec' column not found")
+
+    print("[DEBUG] returning penalty 1e9")
     return np.full(n_obj, 1e9, dtype=float)
+
+
+def _extract_spec_threshold(spec_str: str) -> Optional[float]:
+    """从 spec 字符串（如 '> 60', '< 300p'）中提取数值阈值。"""
+    s = spec_str.strip().lstrip('>≥<≤ ')
+    try:
+        return normalize_value(s)
+    except Exception:
+        return None
+
+
+def _normalize_objectives(values: List[float], specs: List[str], directions: List[int]) -> List[float]:
+    """归一化目标值，使各目标量级一致且 0 表示刚好达标。
+
+    对于 > 类 spec（要最大化）：obj = (threshold - raw) / |threshold|
+    对于 < 类 spec（要最小化）：obj = (raw - threshold) / |threshold|
+
+    结果：0 = 刚好达标，负值 = 超出指标（更好），正值 = 违规（更差）。
+    """
+    normalized = []
+    for val, spec_str, d in zip(values, specs, directions):
+        raw_val = val * d  # 还原原始值（因为 val = raw * direction）
+        threshold = _extract_spec_threshold(spec_str)
+        if threshold is not None and abs(threshold) > 1e-30:
+            if d == -1:  # > 类：要最大化
+                obj = (threshold - raw_val) / abs(threshold)
+            else:          # < 类：要最小化
+                obj = (raw_val - threshold) / abs(threshold)
+            normalized.append(obj)
+        else:
+            # 无法提取阈值，返回已修正方向的值
+            normalized.append(val)
+    return normalized
 
 
 def evaluate_candidate(
@@ -594,14 +627,25 @@ def evaluate_candidate(
         mae_set_var(client, name, float(val))
 
     run_simulation_and_wait(client)
-    out_csv = read_simulation_output_csv(client, run_directory, current_test_output)
-    print(f"out {out_csv}")
-    df = pd.read_csv(out_csv)
+ #   out_csv = read_simulation_output_csv(client, run_directory, current_test_output)
+#   print(f"out {out_csv}")
+#    df = pd.read_csv(out_csv)
+    df = read_simulation_output_csv(client, run_directory, current_test_output)
     print(f"df  {df}")
-    return extract_objectives_from_output_csv(df, n_obj)
+    return extract_objectives_from_output_csv(df, n_obj, specs)
+#    return extract_objectives_from_output_csv(df, n_obj, specs)
 
+
+def find_header_row(file_path: Path) -> int:
+    with open(file_path, 'r', encoding='utf-8') as f:
+        for i, line in enumerate(f):
+            # 检测包含关键列名的行（可根据实际情况调整）
+            if 'Test' in line and 'Output' in line and 'Spec' in line and 'Weight' in line:
+                return i
+    return 0
 
 # ── Optimization callback (per-generation logging) ──────────────────────────
+
 
 
 class OptimizationLogger:
@@ -660,6 +704,7 @@ class OptimizationLogger:
         best_idx = int(np.argmin(F.sum(axis=1)))
         best_X = X[best_idx]
         best_F = F[best_idx]
+        print(f"[DEBUG_2] best_idx= {best_idx};;best_F={best_F}")
 
         self.data["n_gen"].append(gen)
         self.data["n_eval"].append(algorithm.evaluator.n_eval)
@@ -667,6 +712,8 @@ class OptimizationLogger:
         self.data["best_F"].append(best_F.copy())
         self.data["all_X"].append(X.copy())
         self.data["all_F"].append(F.copy())
+        print(f"[DEBUG_3] self.data  {self.data["all_F"]}")
+
 
         # Terminal display
         print(f"\n{'='*60}")
@@ -855,6 +902,10 @@ def _plot_pareto_2d_matrix(
     plt.savefig(str(save_path / "pareto.png"), dpi=150)
     print(f"  [plot] saved → {save_path / 'pareto.png'} (2D scatter matrix)")
 
+###########################################################################################
+#       real done
+#
+##########################################################################################
 
 def run_optimization_loop(
     run_directory: str = ".",
@@ -875,9 +926,17 @@ def run_optimization_loop(
     from pymoo.core.problem import Problem
 
     VirtuosoClientClass = _get_virtuoso_client_class()
+    print(f"[DEBUG] Using VirtuosoClientClass: {VirtuosoClientClass}")
     client = VirtuosoClientClass.from_env()
+    print(f"[DEBUG] client: {client}")
     current_test = get_current_test_name(client)
-
+    print(f"[DEBUG] current_test: {current_test}")
+#    runDIR=client.execute_skill("getWorkingDir() ")
+#    run_directory=runDIR.output.strip()
+    runDIR = client.execute_skill("getWorkingDir()")
+    run_directory = runDIR.output.strip().strip('"')   # 关键修改：去掉引号
+    print(f"[DEBUG] run_directory (cleaned): {run_directory}")
+#    print(f"[DEBUG] run_directory: {run_directory}")
     var_names, vals, mins, maxs = fetch_variables(client)
     # Validate all bounds before starting optimization
     for n, v, lo, hi in zip(var_names, vals.tolist(), mins.tolist(), maxs.tolist()):
@@ -962,7 +1021,7 @@ def run_optimization_loop(
                         csv_path=self.csv_path,
                         dry_run=self.dry_run,
                         n_obj=self.n_obj,
-                         specs=self.specs,   # 新增这一行
+                        specs=self.specs,   # 新增这一行
                     )
                 except Exception:
                     print("Error evaluating candidate:", i)
@@ -1003,10 +1062,11 @@ def run_optimization_loop(
     if not hasattr(res, 'callback_data') or not res.callback_data:
         res.callback_data = logger.data
 
-    # Always include var_names / obj_names for the GUI results table
+    # Always include var_names / obj_names / specs for the GUI results table
     if res.callback_data:
         res.callback_data["var_names"] = var_names
         res.callback_data["obj_names"] = obj_names
+        res.callback_data["specs"] = specs
 
     # Generate plots (default on)
     if plot:
@@ -1027,7 +1087,9 @@ def run_optimization_loop(
 
     return res
 
-
+############################################################################################
+#                     main
+############################################################################################
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run Virtuoso <-> pymoo optimization.")
     parser.add_argument("--run-directory", default=".", help="Remote Virtuoso run directory")

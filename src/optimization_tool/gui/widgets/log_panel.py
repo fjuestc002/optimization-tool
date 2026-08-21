@@ -4,6 +4,8 @@ from PySide6.QtWidgets import QVBoxLayout, QWidget, QPlainTextEdit, QLabel
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QTextCharFormat, QTextCursor
 
+from ..lang import tr
+
 
 # CIW-style color scheme
 COLOR_INFO = QColor("#000000")       # black — normal output
@@ -25,9 +27,9 @@ class LogPanel(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(2)
 
-        title = QLabel("日志输出 (CIW)")
-        title.setStyleSheet("font-weight: bold; color: #1a3a5c; font-size: 12px;")
-        layout.addWidget(title)
+        self.title = QLabel()
+        self.title.setStyleSheet("font-weight: bold; color: #1a3a5c; font-size: 12px;")
+        layout.addWidget(self.title)
 
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
@@ -42,6 +44,12 @@ class LogPanel(QWidget):
             }
         """)
         layout.addWidget(self.log)
+
+        self.retranslate_ui()
+
+    def retranslate_ui(self):
+        """Update UI strings to current language."""
+        self.title.setText(tr("log_title"))
 
     def _append(self, text: str, color: QColor):
         fmt = QTextCharFormat()
