@@ -235,9 +235,13 @@ class OptimizationWorker(QThread):
                 "obj_names": obj_names,
             })
 
+        # Extract project object if present (not a standard run_optimization_loop param)
+        project_obj = params.pop("project_obj", None)
+
         result = run_optimization_loop(
             **params,
             progress_callback=_progress_callback,
+            project_obj=project_obj,
         )
 
         if self._abort:

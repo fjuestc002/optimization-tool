@@ -13,6 +13,8 @@ from PySide6.QtGui import QAction, QFont, QActionGroup
 from .widgets import ParamsPanel, PlotPanel, ResultsTable, LogPanel, VncWidget
 from .workers import OptimizationWorker, OptimizationWorkerSignals
 from .lang import tr, set_lang, get_lang, get_available_langs
+from .dialogs import NewProjectDialog, OpenProjectDialog, LoadConfigDialog
+from ..project import ProjectManager, Project
 
 
 class MainWindow(QMainWindow):
@@ -26,6 +28,10 @@ class MainWindow(QMainWindow):
         self._worker = None
         self._is_connected = False
         self._plot_history = {"n_gen": [], "best_F": [], "all_F": [], "obj_names": None}
+
+        # Project management
+        self._project_manager = ProjectManager()
+        self._current_project: Optional[Project] = None
 
         self._build_menubar()
         self._build_connection_bar()
@@ -43,6 +49,38 @@ class MainWindow(QMainWindow):
         self._act_new = QAction(tr("act_new"), self)
         self._act_new.triggered.connect(self._on_new_optimization)
         self._menu_file.addAction(self._act_new)
+        self._menu_file.addSeparator()
+
+        # ── Project submenu ──
+        self._act_project_new = QAction(tr("act_project_new"), self)
+        self._act_project_new.triggered.connect(self._on_project_new)
+        self._menu_file.addAction(self._act_project_new)
+
+        self._act_project_open = QAction(tr("act_project_open"), self)
+        self._act_project_open.triggered.connect(self._on_project_open)
+        self._menu_file.addAction(self._act_project_open)
+
+        self._act_project_close = QAction(tr("act_project_close"), self)
+        self._act_project_close.triggered.connect(self._on_project_close)
+        self._act_project_close.setEnabled(False)
+        self._menu_file.addAction(self._act_project_close)
+
+        self._act_project_delete = QAction(tr("act_project_delete"), self)
+        self._act_project_delete.triggered.connect(self._on_project_delete)
+        self._menu_file.addAction(self._act_project_delete)
+
+        self._menu_file.addSeparator()
+
+        # ── Config save/load ──
+        self._act_save_config = QAction(tr("act_save_config"), self)
+        self._act_save_config.triggered.connect(self._on_save_config)
+        self._act_save_config.setEnabled(False)
+        self._menu_file.addAction(self._act_save_config)
+
+        self._act_load_config = QAction(tr("act_load_config"), self)
+        self._act_load_config.triggered.connect(self._on_load_config)
+        self._menu_file.addAction(self._act_load_config)
+
         self._menu_file.addSeparator()
         self._act_exit = QAction(tr("act_exit"), self)
         self._act_exit.triggered.connect(self.close)
@@ -186,6 +224,18 @@ class MainWindow(QMainWindow):
     def _build_statusbar(self):
         sb = self.statusBar()
 
+        # Project status label (leftmost)
+        self.lbl_project = QLabel()
+        self.lbl_project.setStyleSheet("padding: 1px 8px; font-size: 11px; color: #E65100;")
+        sb.addWidget(self.lbl_project)
+        self._update_project_label()
+
+        # Separator
+        sep0 = QFrame()
+        sep0.setFrameShape(QFrame.VLine)
+        sep0.setStyleSheet("color: #aaaaaa;")
+        sb.addWidget(sep0)
+
         # Status indicator (colored square + label)
         status_frame = QHBoxLayout()
         status_frame.setContentsMargins(4, 0, 8, 0)
@@ -235,7 +285,11 @@ class MainWindow(QMainWindow):
     def retranslate_ui(self):
         """Update all UI strings to current language."""
         # Window title
-        self.setWindowTitle(tr("window_title"))
+        if self._current_project:
+            self.setWindowTitle(tr("window_title") + " — " +
+                                tr("project_status", name=self._current_project.name))
+        else:
+            self.setWindowTitle(tr("window_title"))
 
         # Menu bar
         self._menu_file.setTitle(tr("menu_file"))
@@ -244,6 +298,12 @@ class MainWindow(QMainWindow):
         self._menu_help.setTitle(tr("menu_help"))
         self._menu_lang.setTitle(tr("menu_lang"))
         self._act_new.setText(tr("act_new"))
+        self._act_project_new.setText(tr("act_project_new"))
+        self._act_project_open.setText(tr("act_project_open"))
+        self._act_project_close.setText(tr("act_project_close"))
+        self._act_project_delete.setText(tr("act_project_delete"))
+        self._act_save_config.setText(tr("act_save_config"))
+        self._act_load_config.setText(tr("act_load_config"))
         self._act_exit.setText(tr("act_exit"))
         self._act_start.setText(tr("act_start"))
         self._act_stop_act.setText(tr("act_stop"))
@@ -266,6 +326,7 @@ class MainWindow(QMainWindow):
 
         # Status bar
         self.lbl_status_text.setText(tr("status_ready"))
+        self._update_project_label()
 
         # Child widgets
         self.params.retranslate_ui()
@@ -346,6 +407,136 @@ class MainWindow(QMainWindow):
         self.params.btn_start.setEnabled(False)
         self.log.info("已断开 Virtuoso 连接")
 
+    # ── Project management ──
+
+    def _update_project_label(self):
+        """Update the project status label in the status bar."""
+        if self._current_project:
+            self.lbl_project.setText(tr("project_status", name=self._current_project.name))
+            self.lbl_project.setVisible(True)
+        else:
+            self.lbl_project.setText(tr("project_no_project"))
+            self.lbl_project.setVisible(True)
+
+    def _on_project_new(self):
+        """Open the New Project dialog and create a project."""
+        dlg = NewProjectDialog(str(self._project_manager.root_path), self)
+        if dlg.exec():
+            name = dlg.project_name
+            root = dlg.selected_root
+            try:
+                # Update root path if changed
+                self._project_manager.set_root_path(root)
+                proj = self._project_manager.create_project(name)
+                self._current_project = proj
+                self._project_manager.current_project = proj
+                self._update_project_label()
+                self._act_project_close.setEnabled(True)
+                self._act_save_config.setEnabled(True)
+                # Update params panel
+                self.params.set_project(proj)
+                self.log.ok(tr("msg_project_created", name=name))
+            except FileExistsError:
+                QMessageBox.warning(self, tr("project_new_title"),
+                                    tr("msg_project_exists", name=name))
+            except ValueError as exc:
+                QMessageBox.warning(self, tr("project_new_title"), str(exc))
+
+    def _on_project_open(self):
+        """Open the Project list dialog and open a project."""
+        projects = self._project_manager.list_projects()
+        if not projects:
+            QMessageBox.information(self, tr("project_open_title"),
+                                    "No projects found. Create one first.")
+            return
+        dlg = OpenProjectDialog(projects, self)
+        if dlg.exec():
+            name = dlg.selected_name
+            try:
+                proj = self._project_manager.open_project(name)
+                self._current_project = proj
+                self._update_project_label()
+                self._act_project_close.setEnabled(True)
+                self._act_save_config.setEnabled(True)
+                self.params.set_project(proj)
+                self.log.ok(tr("msg_project_opened", name=name))
+            except FileNotFoundError as exc:
+                QMessageBox.warning(self, tr("project_open_title"), str(exc))
+
+    def _on_project_close(self):
+        """Close the current project."""
+        if self._current_project:
+            name = self._current_project.name
+            self._project_manager.close_project()
+            self._current_project = None
+            self.params.clear_project()
+            self._update_project_label()
+            self._act_project_close.setEnabled(False)
+            self._act_save_config.setEnabled(False)
+            self.log.info(tr("msg_project_closed"))
+
+    def _on_project_delete(self):
+        """Delete the current (or selected) project."""
+        if not self._current_project:
+            QMessageBox.information(self, tr("project_delete_title"),
+                                    "No project is currently open.")
+            return
+
+        name = self._current_project.name
+        path = str(self._current_project.path)
+        ret = QMessageBox.question(
+            self, tr("project_delete_title"),
+            tr("project_delete_confirm", name=name) + "\n" +
+            tr("project_delete_path", path=path),
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if ret != QMessageBox.Yes:
+            return
+
+        try:
+            self._project_manager.delete_project(name)
+            self._current_project = None
+            self.params.clear_project()
+            self._update_project_label()
+            self._act_project_close.setEnabled(False)
+            self._act_save_config.setEnabled(False)
+            self.log.info(tr("msg_project_deleted", name=name))
+        except Exception as exc:
+            QMessageBox.critical(self, tr("project_delete_title"), str(exc))
+
+    def _on_save_config(self):
+        """Save the current parameter panel configuration to the project."""
+        if not self._current_project:
+            return
+        config = self._build_config_dict()
+        cfg_path = self._current_project.path / "config.txt"
+        lines = [f"{k}={v}" for k, v in config.items()]
+        cfg_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        self.log.info(tr("msg_config_saved"))
+
+    def _on_load_config(self):
+        """Load a config.txt from a previous run and restore params."""
+        dlg = LoadConfigDialog(self)
+        if dlg.exec() and dlg.config:
+            cfg = dlg.config
+            try:
+                self.params.restore_config(cfg)
+                self.log.info(tr("msg_config_loaded"))
+            except Exception as exc:
+                self.log.error(tr("msg_config_load_fail", exc=str(exc)))
+
+    def _build_config_dict(self) -> dict:
+        """Build a configuration dict from the current params panel state."""
+        return {
+            "algorithm": self.params.algo,
+            "generations": str(self.params.generations),
+            "population": str(self.params.population),
+            "seed": str(self.params.seed),
+            "dry_run": str(self.params.dry_run),
+            "plot_enabled": str(self.params.plot_enabled),
+            "verbose": str(self.params.verbose),
+        }
+
     # ── Optimization control ──
 
     def _on_start(self):
@@ -399,7 +590,13 @@ class MainWindow(QMainWindow):
             if csv_path:
                 kwargs["csv_filename"] = csv_path
             kwargs["run_directory"] = self.params.run_directory
-        if self.params.project_enabled:
+
+        # Project integration: if a project is open, auto-save results
+        if self._current_project is not None:
+            kwargs["project_obj"] = self._current_project
+            # Also save config to the project
+            self._on_save_config()
+        elif self.params.project_enabled:
             proj = self.params.project_dir or "optimization_project"
             kwargs["project_dir"] = proj
 

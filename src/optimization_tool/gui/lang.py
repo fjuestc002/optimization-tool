@@ -19,6 +19,12 @@ _STRINGS = {
         "menu_help": "帮助(&H)",
         "menu_lang": "语言(&L)",
         "act_new": "新建优化",
+        "act_project_new": "新建项目",
+        "act_project_open": "打开项目",
+        "act_project_close": "关闭项目",
+        "act_project_delete": "删除项目",
+        "act_save_config": "保存配置",
+        "act_load_config": "加载配置...",
         "act_exit": "退出(&X)",
         "act_start": "开始优化",
         "act_stop": "停止",
@@ -127,6 +133,48 @@ _STRINGS = {
         "msg_opt_ok": "优化完成 ✓  Pareto 解数: {n}",
         "msg_results_parse": "结果解析: {exc}",
         "msg_reset": "已重置 — 准备新优化",
+
+        # ── Project management ──
+        "project_status": "项目: {name}",
+        "project_no_project": "未打开项目",
+
+        # ── New Project Dialog ──
+        "project_new_title": "新建项目",
+        "project_new_name": "项目名称:",
+        "project_new_root": "运行路径:",
+        "project_new_btn_browse": "浏览...",
+        "project_new_btn_ok": "创建",
+        "project_new_btn_cancel": "取消",
+
+        # ── Open Project Dialog ──
+        "project_open_title": "打开项目",
+        "project_open_list": "选择项目:",
+        "project_open_btn_ok": "打开",
+        "project_open_btn_cancel": "取消",
+
+        # ── Delete Project ──
+        "project_delete_title": "删除项目",
+        "project_delete_confirm": "确认将项目「{name}」移入回收站？",
+        "project_delete_path": "路径: {path}",
+        "project_delete_btn_yes": "确认删除",
+        "project_delete_btn_no": "取消",
+
+        # ── Load Config Dialog ──
+        "load_config_title": "加载配置",
+        "load_config_filter": "配置文件 (*.txt);;所有文件 (*.*)",
+
+        # ── Project messages ──
+        "msg_project_created": "项目已创建: {name}",
+        "msg_project_opened": "项目已打开: {name}",
+        "msg_project_closed": "项目已关闭",
+        "msg_project_deleted": "项目已移入回收站: {name}",
+        "msg_project_name_empty": "项目名称不能为空",
+        "msg_project_name_invalid": "项目名称包含非法字符",
+        "msg_project_exists": "项目已存在: {name}",
+        "msg_project_not_found": "未找到项目: {name}",
+        "msg_config_saved": "配置已保存",
+        "msg_config_loaded": "配置已加载",
+        "msg_config_load_fail": "加载配置失败: {exc}",
     },
 
     "en": {
@@ -138,6 +186,12 @@ _STRINGS = {
         "menu_help": "&Help",
         "menu_lang": "&Language",
         "act_new": "New Optimization",
+        "act_project_new": "New Project",
+        "act_project_open": "Open Project",
+        "act_project_close": "Close Project",
+        "act_project_delete": "Delete Project",
+        "act_save_config": "Save Config",
+        "act_load_config": "Load Config...",
         "act_exit": "E&xit",
         "act_start": "Start Optimization",
         "act_stop": "Stop",
@@ -246,6 +300,48 @@ _STRINGS = {
         "msg_opt_ok": "Done ✓  Pareto solutions: {n}",
         "msg_results_parse": "Result parse: {exc}",
         "msg_reset": "Reset — ready for new optimization",
+
+        # ── Project management ──
+        "project_status": "Project: {name}",
+        "project_no_project": "No project open",
+
+        # ── New Project Dialog ──
+        "project_new_title": "New Project",
+        "project_new_name": "Project Name:",
+        "project_new_root": "Root Path:",
+        "project_new_btn_browse": "Browse...",
+        "project_new_btn_ok": "Create",
+        "project_new_btn_cancel": "Cancel",
+
+        # ── Open Project Dialog ──
+        "project_open_title": "Open Project",
+        "project_open_list": "Select a project:",
+        "project_open_btn_ok": "Open",
+        "project_open_btn_cancel": "Cancel",
+
+        # ── Delete Project ──
+        "project_delete_title": "Delete Project",
+        "project_delete_confirm": "Move project '{name}' to recycle bin?",
+        "project_delete_path": "Path: {path}",
+        "project_delete_btn_yes": "Delete",
+        "project_delete_btn_no": "Cancel",
+
+        # ── Load Config Dialog ──
+        "load_config_title": "Load Config",
+        "load_config_filter": "Config files (*.txt);;All files (*.*)",
+
+        # ── Project messages ──
+        "msg_project_created": "Project created: {name}",
+        "msg_project_opened": "Project opened: {name}",
+        "msg_project_closed": "Project closed",
+        "msg_project_deleted": "Project moved to recycle bin: {name}",
+        "msg_project_name_empty": "Project name cannot be empty",
+        "msg_project_name_invalid": "Project name contains invalid characters",
+        "msg_project_exists": "Project already exists: {name}",
+        "msg_project_not_found": "Project not found: {name}",
+        "msg_config_saved": "Config saved",
+        "msg_config_loaded": "Config loaded",
+        "msg_config_load_fail": "Failed to load config: {exc}",
     },
 }
 

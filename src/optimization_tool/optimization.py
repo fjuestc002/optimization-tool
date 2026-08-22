@@ -959,6 +959,7 @@ def run_optimization_loop(
     algo: str = "nsga2",
     project_dir: Optional[str] = None,
     progress_callback: Optional[callable] = None,
+    project_obj: Optional[Any] = None,   # Project instance from GUI
 ) -> Any:
     from pymoo.core.problem import Problem
 
@@ -998,9 +999,23 @@ def run_optimization_loop(
     obj_names = names
     logger = OptimizationLogger(var_names, obj_names, progress_callback=progress_callback)
 
-    # Initialize project run (if --project-dir specified)
+    # Initialize project run (if --project-dir specified or project_obj provided)
     project_run = None
-    if project_dir:
+    if project_obj is not None:
+        # New project workflow: use Project.create_run()
+        config = {
+            "algorithm": algo,
+            "generations": generations,
+            "pop_size": pop_size,
+            "dry_run": dry_run,
+            "seed": seed,
+        }
+        project_run = project_obj.create_run(algo, config)
+        project_run.save_config_txt(config)
+        project_obj.save_variables_csv(var_names, vals.tolist(), mins.tolist(), maxs.tolist())
+        project_obj.save_specs_csv(names, weights.tolist(), specs)
+        print(f"  [project] run artifacts -> {project_run.dir}")
+    elif project_dir:
         project_run = ProjectRun.create(project_dir)
         project_run.save_config(
             variables=var_names,
@@ -1118,7 +1133,10 @@ def run_optimization_loop(
             project_run.save_all(res, logger, var_names, obj_names)
             project_run.copy_plot(Path(plot_dir) / "convergence.png")
             project_run.copy_plot(Path(plot_dir) / "pareto.png")
-            print(f"  [project] results saved → {project_run.dir}")
+            print(f"  [project] results saved -> {project_run.dir}")
+            # Update project summary files (new project workflow only)
+            if project_obj is not None:
+                project_obj.update_summary(project_run)
         except Exception as exc:
             print(f"  [project] warning: failed to save artifacts — {exc}")
 

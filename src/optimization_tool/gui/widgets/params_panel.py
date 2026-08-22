@@ -6,6 +6,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
 )
 from PySide6.QtCore import Qt
+from typing import Any, Optional
 
 from ..lang import tr
 
@@ -16,6 +17,7 @@ class ParamsPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFixedWidth(300)
+        self._current_project_name: Optional[str] = None
         self._build_ui()
 
     def _build_ui(self):
@@ -94,10 +96,14 @@ class ParamsPanel(QWidget):
 
         layout.addWidget(self.grp_mode)
 
-        # ── Project directory ──
+        # ── Project display ──
         self.grp_proj = QGroupBox()
         projl = QVBoxLayout(self.grp_proj)
         projl.setSpacing(4)
+
+        self.lbl_project_name = QLabel()
+        self.lbl_project_name.setStyleSheet("font-weight: bold; color: #E65100;")
+        projl.addWidget(self.lbl_project_name)
 
         self.edit_project_dir = QLineEdit()
         self.edit_project_dir.setPlaceholderText(tr("proj_placeholder"))
@@ -172,6 +178,13 @@ class ParamsPanel(QWidget):
         self.chk_verbose.setText(tr("chk_verbose"))
 
         self.grp_proj.setTitle(tr("grp_proj"))
+        if self._current_project_name:
+            self.lbl_project_name.setText(
+                tr("project_status", name=self._current_project_name))
+            self.lbl_project_name.setVisible(True)
+        else:
+            self.lbl_project_name.setText(tr("project_no_project"))
+            self.lbl_project_name.setVisible(True)
         self.edit_project_dir.setPlaceholderText(tr("proj_placeholder"))
 
         self.grp_sim.setTitle(tr("grp_sim"))
@@ -241,3 +254,52 @@ class ParamsPanel(QWidget):
 
     def _on_dry_run_toggled(self, checked: bool):
         self.grp_sim.setEnabled(not checked)
+
+    # ── Project integration ──
+
+    def set_project(self, project: Any) -> None:
+        """Display the current project name in the panel."""
+        self._current_project_name = project.name
+        self.lbl_project_name.setText(
+            tr("project_status", name=project.name))
+        self.lbl_project_name.setVisible(True)
+        self.edit_project_dir.setText(str(project.path))
+        # Auto-enable project checkbox when a project is open
+        self.chk_project.setChecked(True)
+
+    def clear_project(self) -> None:
+        """Clear the project display."""
+        self._current_project_name = None
+        self.lbl_project_name.setText(tr("project_no_project"))
+        self.edit_project_dir.clear()
+        self.chk_project.setChecked(False)
+
+    def restore_config(self, config: dict[str, str]) -> None:
+        """Restore parameter panel state from a config dict.
+
+        Args:
+            config: Dict with keys like ``algorithm``, ``generations``, etc.
+        """
+        algo = config.get("algorithm", "")
+        idx = self.cb_algo.findText(algo)
+        if idx >= 0:
+            self.cb_algo.setCurrentIndex(idx)
+
+        try:
+            self.spin_generations.setValue(int(config.get("generations", 50)))
+        except (ValueError, TypeError):
+            pass
+        try:
+            self.spin_population.setValue(int(config.get("population", 50)))
+        except (ValueError, TypeError):
+            pass
+        try:
+            self.spin_seed.setValue(int(config.get("seed", 1)))
+        except (ValueError, TypeError):
+            pass
+
+        dry_run = config.get("dry_run", "True")
+        self.chk_dry_run.setChecked(dry_run.lower() in ("true", "1", "yes"))
+
+        plot = config.get("plot_enabled", "True")
+        self.chk_plot.setChecked(plot.lower() in ("true", "1", "yes"))
