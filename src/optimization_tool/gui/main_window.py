@@ -435,6 +435,8 @@ class MainWindow(QMainWindow):
                 self._act_save_config.setEnabled(True)
                 # Update params panel
                 self.params.set_project(proj)
+                # Auto-set run directory to project path
+                self.params.edit_run_dir.setText(str(proj.path))
                 self.log.ok(tr("msg_project_created", name=name))
             except FileExistsError:
                 QMessageBox.warning(self, tr("project_new_title"),
@@ -459,6 +461,12 @@ class MainWindow(QMainWindow):
                 self._act_project_close.setEnabled(True)
                 self._act_save_config.setEnabled(True)
                 self.params.set_project(proj)
+                # Auto-set CSV path to project's specs.csv if it exists
+                specs_csv = proj.path / "I_scripts" / "specs.csv"
+                if specs_csv.exists():
+                    self.params.edit_csv.setText(str(specs_csv))
+                # Auto-set run directory to project path
+                self.params.edit_run_dir.setText(str(proj.path))
                 self.log.ok(tr("msg_project_opened", name=name))
             except FileNotFoundError as exc:
                 QMessageBox.warning(self, tr("project_open_title"), str(exc))
@@ -470,6 +478,9 @@ class MainWindow(QMainWindow):
             self._project_manager.close_project()
             self._current_project = None
             self.params.clear_project()
+            # Clear auto-set paths
+            self.params.edit_csv.clear()
+            self.params.edit_run_dir.clear()
             self._update_project_label()
             self._act_project_close.setEnabled(False)
             self._act_save_config.setEnabled(False)

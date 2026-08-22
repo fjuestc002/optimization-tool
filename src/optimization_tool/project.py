@@ -874,7 +874,13 @@ class ProjectRun:
         try:
             rows = self.project.load_specs_csv()
             if rows:
-                return [r["spec"] for r in rows]
+                specs = []
+                for r in rows:
+                    spec_val = r.get("spec", "")
+                    if spec_val and str(spec_val).strip():
+                        specs.append(str(spec_val).strip())
+                if specs:
+                    return specs
         except Exception:
             pass
         return []
